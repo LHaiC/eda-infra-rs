@@ -1,3 +1,5 @@
 **/target
 **/*.rs.bk
+**/compile_commands.json
+**/.cache
 Cargo.lock

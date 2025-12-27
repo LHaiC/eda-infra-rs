@@ -1,0 +1,31 @@
+[package]
+name = "dcsr"
+version = "0.1.0"
+edition = "2021"
+description = "A Dynamic CSR library for CPU/GPU heterogeneous graph data"
+authors = ["Haichuan Liu <LHaiC@outlook.com>"]
+links = "dcsr"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "0.8"
+accessible = "0.1.1"
+bytemuck = "1.10.0"
+clilog = { version = "0.2.5", path = "../clilog" }
+cust = { version = "0.3.2", optional = true, features = ["bytemuck"] }
+cust_raw = { version = "0.11.3", optional = true }
+impl-tools = "0.10.0"
+lazy_static = "1.4.0"
+memory-stats = "1.1.0"
+rayon = { version = "1.7.0", optional = true }
+size = "0.4.1"
+ulib = { version = "0.3.13", path = "../ulib" }
+
+[features]
+default = ["cuda"]
+cuda = ["dep:cust", "dep:cust_raw", "ulib/cuda", "accessible/cuda"]
+rayon = ["dep:rayon"]
+
+[build-dependencies]
+ucc = { version = "0.2.6", path = "../ucc" }
