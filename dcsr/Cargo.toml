@@ -19,6 +19,8 @@ impl-tools = "0.10.0"
 lazy_static = "1.4.0"
 memory-stats = "1.1.0"
 rayon = { version = "1.7.0", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 size = "0.4.1"
 ulib = { version = "0.3.13", path = "../ulib" }
 

@@ -1,0 +1,103 @@
+{
+  "configs": [
+    {
+      "num_nodes": 10000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 1000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 10000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 100,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 100000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 10000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 100000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 1000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 1000000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 100000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 1000000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 10000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 10000000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 1000000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 10000000,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 100000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 3999174,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 1000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 3999174,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 10000,
+      "iterations": 3
+    },
+    {
+      "num_nodes": 3999174,
+      "avg_degree": 10,
+      "super_node_percent": 0.05,
+      "super_node_degree": 200,
+      "update_rounds": 100,
+      "batch_size": 100000,
+      "iterations": 3
+    }
+  ]
+}
