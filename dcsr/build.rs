@@ -12,6 +12,7 @@ fn main() {
     let csrc_headers = ucc::import_csrc();
     let mut cl_cpp = ucc::cl_cpp_openmp();
     cl_cpp.cpp(true)
+    
         .include(&csrc_headers)
         .include(&cuda_include);
     cl_cpp.debug(false).opt_level(3);

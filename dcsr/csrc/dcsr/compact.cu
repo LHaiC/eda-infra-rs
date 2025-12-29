@@ -74,9 +74,6 @@ void Dcsr::compact() {
     uint32_t new_chunk_id = _mem_pool.alloc_new_chunk(total_size);
     uint8_t *new_chunk = _mem_pool.get_chunk_device_ptr(new_chunk_id);
 
-    // Sync the new chunk to GPU (it's currently empty, but we need to sync metadata)
-    _mem_pool.cuda_chunk(new_chunk_id);
-
     uint32_t threads = 256;
     uint32_t blocks = (_num_nodes + threads - 1) / threads;
 
