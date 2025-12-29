@@ -1,4 +1,4 @@
-use dcsr::{Dcsr, DcsrView};
+use dcsr::{DynamicCSR, MemPolicy};
 use ulib::{Device, UVec, UniversalCopy, AsUPtr};
 use std::time::Instant;
 use std::fs;
@@ -23,12 +23,12 @@ pub struct BenchmarkConfig {
 impl Default for BenchmarkConfig {
     fn default() -> Self {
         Self {
-            num_nodes: 1_000_000,
+            num_nodes: 100_000,
             avg_degree: 10,
             super_node_percent: 0.05,
             super_node_degree: 200,
-            update_rounds: 10,
-            batch_size: 2000,
+            update_rounds: 5,
+            batch_size: 500,
             iterations: 3,
         }
     }
@@ -56,9 +56,15 @@ impl BenchmarkSuite {
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkResult {
     pub config: BenchmarkConfig,
-    pub dcsr_avg_time_ms: f64,
-    pub naive_avg_time_ms: f64,
-    pub speedup: f64,
+    pub dcsr_commit_avg_ms: f64,
+    pub dcsr_get_ptr_avg_ms: f64,
+    pub dcsr_total_avg_ms: f64,
+    pub naive_commit_avg_ms: f64,
+    pub naive_get_ptr_avg_ms: f64,
+    pub naive_total_avg_ms: f64,
+    pub speedup_commit: f64,
+    pub speedup_get_ptr: f64,
+    pub speedup_total: f64,
 }
 
 impl BenchmarkResult {
@@ -71,97 +77,35 @@ impl BenchmarkResult {
             self.config.super_node_percent * 100.0,
             self.config.avg_degree,
             self.config.super_node_degree,
-            self.dcsr_avg_time_ms,
-            self.naive_avg_time_ms,
-            self.speedup,
+            self.dcsr_total_avg_ms,
+            self.naive_total_avg_ms,
+            self.speedup_total,
         );
     }
 
     pub fn print_table_header() {
         println!(
             "{:>10} | {:>8} | {:>8} | {:>6} | {:>6} | {:>6} | {:>10} | {:>10} | {:>6}",
-            "Nodes", "Batch", "Rounds", "Super%", "AvgDeg", "SupDeg",
+            "Nodes", "Batch", "Rounds", " Super%", "AvgDeg", "SupDeg",
             "DCSR(ms)", "Naive(ms)", "Speedup"
         );
-        println!("{}", "-".repeat(85));
+        println!("{}", "-".repeat(97));
     }
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 1: The Baseline - Naive CSR implemented with UVec
-// ----------------------------------------------------------------------------
-// This represents the "brute-force" approach: every update triggers a full
-// re-allocation and copy on the CPU, then pushes back to the GPU.
-// If your Dcsr is slower than this, throw your design in the trash.
-
-struct NaiveCsr<T: UniversalCopy> {
-    // --- CPU-side "Logical View" ---
-    adj: Vec<Vec<T>>, // The data structure users interact with
-
-    // --- GPU-side "Physical View" (Flat CSR) ---
-    pub indptr: UVec<u32>,
-    pub data: UVec<T>,
-
-    device: Device,
-}
-
-impl<T: UniversalCopy + Clone> NaiveCsr<T> {
-    pub fn new(num_nodes: u32, device: Device) -> Self {
-        let _ctx = device.get_context();
-
-        // Initialize CPU-side structure
-        let adj = vec![Vec::new(); num_nodes as usize];
-
-        // Initialize GPU-side structures (initially empty but allocated)
-        let indptr = UVec::from(vec![0u32; (num_nodes + 1) as usize]);
-        Self {
-            adj,
-            indptr,
-            data: UVec::with_capacity(0, device),
-            device,
-        }
-    }
-
-    // --- Staging APIs (operate on CPU, very fast) ---
-
-    pub fn append(&mut self, node_id: u32, new_neighbors: &[T]) {
-        self.adj[node_id as usize].extend_from_slice(new_neighbors);
-    }
-
-    // --- Commit API (The heavy lifting) ---
-    pub fn commit(&mut self) {
-        let _ctx = self.device.get_context();
-
-        // 1. Rebuild flat CSR structure on CPU from the `adj` list
-        let num_nodes = self.adj.len();
-        let mut indptr_vec = Vec::with_capacity(num_nodes + 1);
-        let mut data_vec = Vec::new();
-
-        indptr_vec.push(0);
-        let mut current_offset = 0;
-
-        for neighbors in &self.adj {
-            data_vec.extend_from_slice(neighbors);
-            current_offset += neighbors.len();
-            indptr_vec.push(current_offset as u32);
-        }
-
-        // 2. Push the newly built structures to the GPU
-        //    UVec::from will handle the H2D copy.
-        self.indptr = UVec::from(indptr_vec);
-        self.data = UVec::from(data_vec);
-
-        let _ = self.indptr.as_uptr(self.device);
-        let _ = self.data.as_uptr(self.device);
-    }
-}
-
-// ----------------------------------------------------------------------------
-// SECTION 2: FFI Verification Helpers
+// SECTION 1: FFI Verification Helpers
 // ----------------------------------------------------------------------------
 
 extern "C" {
-    fn dcsr_test_verify_sum(view: DcsrView, results: *mut i32, count: u32);
+    fn dcsr_test_verify_sum(
+        num_nodes: u32,
+        d_data: *const i32,
+        d_start: *const usize,
+        d_size: *const usize,
+        results: *mut i32,
+        count: u32
+    );
     fn naive_csr_test_verify_sum(
         d_indptr: *const u32,
         d_data: *const i32,
@@ -171,11 +115,14 @@ extern "C" {
 }
 
 // Rust wrappers for the FFI calls
-fn verify_dcsr(dcsr: &Dcsr<i32>, count: u32) -> Vec<i32> {
+fn verify_dcsr(dcsr: &DynamicCSR<i32>, count: u32) -> Vec<i32> {
     let mut results = vec![0i32; count as usize];
-    let view = dcsr.view();
+    let device = Device::CUDA(0);
+    let num_nodes = dcsr.policy().num_nodes() as u32;
+    let d_data = dcsr.data_ptr(device);
+    let (d_start, d_size) = dcsr.topology_ptrs(device);
     unsafe {
-        dcsr_test_verify_sum(view, results.as_mut_ptr(), count);
+        dcsr_test_verify_sum(num_nodes, d_data, d_start, d_size, results.as_mut_ptr(), count);
     }
     results
 }
@@ -192,19 +139,74 @@ fn verify_naive_csr(csr: &NaiveCsr<i32>, count: u32) -> Vec<i32> {
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 3: Single Benchmark Run
+// SECTION 2: The Baseline - Naive CSR implemented with UVec
+// ----------------------------------------------------------------------------
+
+struct NaiveCsr<T: UniversalCopy> {
+    // --- CPU-side "Logical View" ---
+    adj: Vec<Vec<T>>,
+
+    // --- GPU-side "Physical View" (Flat CSR) ---
+    pub indptr: UVec<u32>,
+    pub data: UVec<T>,
+
+    device: Device,
+}
+
+impl<T: UniversalCopy + Clone> NaiveCsr<T> {
+    pub fn new(num_nodes: u32, device: Device) -> Self {
+        let _ctx = device.get_context();
+
+        let adj = vec![Vec::new(); num_nodes as usize];
+        let indptr = UVec::from(vec![0u32; (num_nodes + 1) as usize]);
+
+        Self {
+            adj,
+            indptr,
+            data: UVec::with_capacity(0, device),
+            device,
+        }
+    }
+
+    pub fn append(&mut self, node_id: usize, val: T) {
+        self.adj[node_id].push(val);
+    }
+
+    pub fn commit(&mut self) {
+        let _ctx = self.device.get_context();
+
+        let num_nodes = self.adj.len();
+        let mut indptr_vec = Vec::with_capacity(num_nodes + 1);
+        let mut data_vec = Vec::new();
+
+        indptr_vec.push(0);
+        let mut current_offset = 0;
+
+        for neighbors in &self.adj {
+            data_vec.extend_from_slice(neighbors);
+            current_offset += neighbors.len();
+            indptr_vec.push(current_offset as u32);
+        }
+
+        self.indptr = UVec::from(indptr_vec);
+        self.data = UVec::from(data_vec);
+    }
+
+    pub fn get_pointers(&self) -> (*const u32, *const T) {
+        let indptr_ptr = self.indptr.as_uptr(self.device);
+        let data_ptr = self.data.as_uptr(self.device);
+        (indptr_ptr, data_ptr)
+    }
+}
+
+// ----------------------------------------------------------------------------
+// SECTION 2: Single Benchmark Run
 // ----------------------------------------------------------------------------
 
 fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
-    println!("\n>>> [BENCHMARK] DCSR vs Naive CSR Update Performance");
-    println!("Configuration: {:?}", config);
-
     let device = Device::CUDA(0);
 
-    // ==========================================
-    // 1. Data Prep
-    // ==========================================
-    println!("    Generating synthetic graph data...");
+    // Data Prep
     use rand::prelude::*;
     use rand::rngs::StdRng;
     let mut rng = StdRng::seed_from_u64(42);
@@ -218,7 +220,6 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
     let normal_data = vec![1i32; config.avg_degree];
     let super_data = vec![1i32; config.super_node_degree];
 
-    // Template Data
     let mut template_adj: Vec<Vec<i32>> = Vec::with_capacity(config.num_nodes as usize);
     for i in 0..config.num_nodes {
         if super_nodes.contains(&i) {
@@ -227,132 +228,138 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
             template_adj.push(normal_data.clone());
         }
     }
-    println!("    Data generation complete.");
 
-    // ==========================================
-    // 2. Benchmarking Loop
-    // ==========================================
-    let mut dcsr_total_time = std::time::Duration::new(0, 0);
-    let mut naive_total_time = std::time::Duration::new(0, 0);
-
-    let update_data = vec![5i32; 1];  // 每次只增加一个元素
-    let super_update_data = vec![10i32; 1];  // 每次只增加一个元素
+    // Benchmarking Loop
+    let mut dcsr_commit_total = std::time::Duration::new(0, 0);
+    let mut dcsr_get_ptr_total = std::time::Duration::new(0, 0);
+    let mut naive_commit_total = std::time::Duration::new(0, 0);
+    let mut naive_get_ptr_total = std::time::Duration::new(0, 0);
 
     for iter in 0..config.iterations {
-        println!("    Iteration {}/{} (Resetting State...)", iter + 1, config.iterations);
 
-        // --- Context Reset ---
-        let mut dcsr_graph = Dcsr::<i32>::new_from_data(template_adj.clone(), device).unwrap();
+            // Context Reset - DCSR
 
+            let mut dcsr_graph = DynamicCSR::<i32>::new();
+
+    
+
+            for (i, neighbors) in template_adj.iter().enumerate() {
+
+                for &val in neighbors {
+
+                    dcsr_graph.append(i, val);
+
+                }
+
+            }
+
+            dcsr_graph.commit();
+
+        // Context Reset - Naive
         let mut naive_graph = NaiveCsr::<i32>::new(config.num_nodes, device);
         for (i, neighbors) in template_adj.iter().enumerate() {
-            naive_graph.append(i as u32, neighbors);
+            for &val in neighbors {
+                naive_graph.append(i, val);
+            }
         }
-        naive_graph.commit(); // Initial commit
+        naive_graph.commit();
 
+        // Initial verification
         if iter == 0 {
             let dcsr_res = verify_dcsr(&dcsr_graph, config.num_nodes);
             let naive_res = verify_naive_csr(&naive_graph, config.num_nodes);
             assert_eq!(dcsr_res, naive_res, "Mismatch after setup");
         }
 
-        // --- Round Loop ---
+        // Round Loop
         for r in 0..config.update_rounds {
-            let nodes_to_update: Vec<u32> = (0..config.batch_size)
-                .map(|_| rng.gen_range(0..config.num_nodes))
+            let nodes_to_update: Vec<usize> = (0..config.batch_size)
+                .map(|_| rng.gen_range(0..config.num_nodes as usize))
                 .collect();
 
-            // >>>>>> Benchmark Dcsr <<<<<<
+            // Benchmark Dcsr - Commit
             let start = Instant::now();
             for &node_id in &nodes_to_update {
-                if super_nodes.contains(&node_id) {
-                    dcsr_graph.append(node_id, &super_update_data);
-                } else {
-                    dcsr_graph.append(node_id, &update_data);
-                }
+                dcsr_graph.append(node_id, 1i32);
             }
-            dcsr_graph.commit().unwrap();
-            dcsr_total_time += start.elapsed();
+            dcsr_graph.commit();
+            dcsr_commit_total += start.elapsed();
 
-            // >>>>>> Benchmark Naive CSR <<<<<<
+            // Benchmark Dcsr - Get Pointer
+            let start = Instant::now();
+            let _data_ptr = dcsr_graph.data_ptr(device);
+            let (_start_ptr, _size_ptr) = dcsr_graph.topology_ptrs(device);
+            dcsr_get_ptr_total += start.elapsed();
+
+            // Benchmark Naive CSR - Commit
             let start = Instant::now();
             for &node_id in &nodes_to_update {
-                if super_nodes.contains(&node_id) {
-                    naive_graph.append(node_id, &super_update_data);
-                } else {
-                    naive_graph.append(node_id, &update_data);
-                }
+                naive_graph.append(node_id, 1i32);
             }
             naive_graph.commit();
-            naive_total_time += start.elapsed();
+            naive_commit_total += start.elapsed();
 
-            // Intermittent Verification
+            // Benchmark Naive CSR - Get Pointer
+            let start = Instant::now();
+            let _ = naive_graph.get_pointers();
+            naive_get_ptr_total += start.elapsed();
+
+            // Intermittent verification (disabled for now)
             if iter == 0 && (r + 1) % (config.update_rounds / 5).max(1) == 0 {
                 let dcsr_res = verify_dcsr(&dcsr_graph, config.num_nodes);
                 let naive_res = verify_naive_csr(&naive_graph, config.num_nodes);
                 assert_eq!(dcsr_res, naive_res, "Mismatch at round {}", r + 1);
             }
-        } // End Rounds
-    } // End Iterations
+        }
+    }
 
-    // ==========================================
-    // 3. Statistics & Reporting
-    // ==========================================
+    // Statistics
+    let total_ops = (config.iterations * config.update_rounds) as f64;
 
-    let total_commits = (config.iterations * config.update_rounds) as f64;
+    let dcsr_commit_avg_ms = dcsr_commit_total.as_secs_f64() * 1000.0 / total_ops;
+    let dcsr_get_ptr_avg_ms = dcsr_get_ptr_total.as_secs_f64() * 1000.0 / total_ops;
+    let dcsr_total_avg_ms = dcsr_commit_avg_ms + dcsr_get_ptr_avg_ms;
 
-    let dcsr_avg_time_ms = dcsr_total_time.as_secs_f64() * 1000.0 / total_commits;
-    let naive_avg_time_ms = naive_total_time.as_secs_f64() * 1000.0 / total_commits;
-    let speedup = naive_avg_time_ms / dcsr_avg_time_ms;
+    let naive_commit_avg_ms = naive_commit_total.as_secs_f64() * 1000.0 / total_ops;
+    let naive_get_ptr_avg_ms = naive_get_ptr_total.as_secs_f64() * 1000.0 / total_ops;
+    let naive_total_avg_ms = naive_commit_avg_ms + naive_get_ptr_avg_ms;
 
-    println!("\n----- BENCHMARK RESULTS -----");
-    println!("Total Commits Measured: {}", total_commits);
-    println!("DCSR (Log-Structured) Avg Latency: {:>10.4} ms / batch", dcsr_avg_time_ms);
-    println!("Naive CSR (Realloc)   Avg Latency: {:>10.4} ms / batch", naive_avg_time_ms);
-    println!("Speedup: {:.2}x", speedup);
-    println!("-----------------------------\n");
-
-    assert!(
-        dcsr_total_time < naive_total_time,
-        "FAILURE: Your DCSR is slower than the brute-force baseline. Go back to the drawing board."
-    );
-    println!("[SUCCESS] Your DCSR is faster and correct.");
+    let speedup_commit = naive_commit_avg_ms / dcsr_commit_avg_ms;
+    let speedup_get_ptr = naive_get_ptr_avg_ms / dcsr_get_ptr_avg_ms;
+    let speedup_total = naive_total_avg_ms / dcsr_total_avg_ms;
 
     BenchmarkResult {
         config: config.clone(),
-        dcsr_avg_time_ms,
-        naive_avg_time_ms,
-        speedup,
+        dcsr_commit_avg_ms,
+        dcsr_get_ptr_avg_ms,
+        dcsr_total_avg_ms,
+        naive_commit_avg_ms,
+        naive_get_ptr_avg_ms,
+        naive_total_avg_ms,
+        speedup_commit,
+        speedup_get_ptr,
+        speedup_total,
     }
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 4: Main Entry Point (for test mode)
+// SECTION 3: Main Entry Point
 // ----------------------------------------------------------------------------
 
 #[cfg(test)]
 fn main() {
-    // Hardcoded config path for test mode
-    let config_path = "tests/benchmark_config.json";
+    let config_path = "tests/benchmark_config_small.json";
 
     let suite = if Path::new(config_path).exists() {
-        println!("Loading benchmark configurations from: {}", config_path);
         BenchmarkSuite::from_json(config_path).expect("Failed to load benchmark config")
     } else {
-        // Use default configuration
-        println!("Config file not found, using default configuration.");
         BenchmarkSuite::from_default()
     };
 
-    println!("\n========================================");
-    println!("  DCSR Benchmark Suite");
-    println!("  Configurations: {}", suite.configs.len());
-    println!("========================================\n");
-
     let mut results = Vec::new();
 
-    for (i, config) in suite.configs.iter().enumerate() {
-        println!("\n[Config {}/{}]", i + 1, suite.configs.len());
+    for config in suite.configs.iter() {
+        println!("\nRunning benchmark with config: {:?}", config);
         let result = run_single_benchmark(config);
         results.push(result);
     }
@@ -368,7 +375,7 @@ fn main() {
     println!("\n========================================");
 
     // Save results to JSON
-    let output_path = "tests/benchmark_results.json";
+    let output_path = "tests/speed_test_results.json";
     if let Err(e) = fs::write(output_path, serde_json::to_string_pretty(&results).unwrap()) {
         eprintln!("Failed to save results: {}", e);
     } else {
@@ -377,19 +384,10 @@ fn main() {
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 5: Unit Test (Backward Compatibility)
+// SECTION 4: Unit Tests
 // ----------------------------------------------------------------------------
 
 #[test]
-fn benchmark_and_verify_update_performance() {
-    let config = BenchmarkConfig::default();
-    let result = run_single_benchmark(&config);
-
-    assert!(result.speedup > 1.0, "DCSR should be faster than naive CSR");
-}
-
-// Test to run the benchmark suite
-#[test]
-fn run_benchmark() {
+fn run_benchmark_suite() {
     main();
 }

@@ -70,7 +70,7 @@ pub struct DeviceContext {
 
 impl Device {
     #[inline]
-    fn to_id(self) -> usize {
+    pub fn to_id(self) -> usize {
         use Device::*;
         match self {
             CPU => 0,
@@ -82,9 +82,9 @@ impl Device {
             }
         }
     }
-    
+
     #[inline]
-    fn from_id(id: usize) -> Device {
+    pub fn from_id(id: usize) -> Device {
         use Device::*;
         match id {
             0 => CPU,

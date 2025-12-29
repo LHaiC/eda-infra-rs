@@ -7,6 +7,7 @@ use std::ops::{ Deref, DerefMut, Index, IndexMut };
 use std::fmt;
 use std::cell::UnsafeCell;
 use bytemuck::Zeroable;
+use std::cmp::max;
 
 #[cfg(feature = "cuda")]
 use cust::memory::{ DeviceBuffer, CopyDestination };
@@ -41,6 +42,11 @@ impl<T: UniversalCopy> UVec<T> {
 #[inline]
 fn realloc_heuristic(new_len: usize) -> usize {
     (new_len as f64 * 1.5).round() as usize
+}
+
+#[inline]
+fn realloc_exponential(new_len: usize, old_len: usize) -> usize {
+    max(new_len, (old_len as f64 * 1.5).round() as usize)
 }
 
 /// The unsafe cell-wrapped internal.
@@ -617,7 +623,7 @@ impl<T: UniversalCopy> UVec<T> {
         if intl.len + additional <= intl.capacity {
             return
         }
-        intl.capacity = realloc_heuristic(intl.len + additional);
+        intl.capacity = realloc_exponential(intl.len + additional, intl.capacity);
         unsafe { intl.realloc_uninit_preserve(device); }
     }
 
@@ -637,7 +643,7 @@ impl<T: UniversalCopy> UVec<T> {
     pub unsafe fn resize_uninit_nopreserve(&mut self, len: usize, device: Device) {
         let intl = self.get_intl_mut();
         if intl.capacity < len {
-            intl.capacity = realloc_heuristic(len);
+            intl.capacity = realloc_exponential(len, intl.capacity);
             intl.realloc_uninit_nopreserve(device);
         }
         intl.len = len;
@@ -653,7 +659,7 @@ impl<T: UniversalCopy> UVec<T> {
         }
         let intl = self.get_intl_mut();
         if intl.capacity < len {
-            intl.capacity = realloc_heuristic(len);
+            intl.capacity = realloc_exponential(len, intl.capacity);
             intl.realloc_uninit_preserve(device);
         }
         intl.len = len;
