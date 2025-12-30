@@ -115,7 +115,7 @@ extern "C" {
 }
 
 // Rust wrappers for the FFI calls
-fn verify_dcsr(dcsr: &DynamicCSR<i32>, count: u32) -> Vec<i32> {
+fn verify_dcsr(dcsr: &mut DynamicCSR<i32>, count: u32) -> Vec<i32> {
     let mut results = vec![0i32; count as usize];
     let device = Device::CUDA(0);
     let num_nodes = dcsr.policy().num_nodes() as u32;
@@ -266,7 +266,7 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
 
         // Initial verification
         if iter == 0 {
-            let dcsr_res = verify_dcsr(&dcsr_graph, config.num_nodes);
+            let dcsr_res = verify_dcsr(&mut dcsr_graph, config.num_nodes);
             let naive_res = verify_naive_csr(&naive_graph, config.num_nodes);
             assert_eq!(dcsr_res, naive_res, "Mismatch after setup");
         }
@@ -306,7 +306,7 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
 
             // Intermittent verification (disabled for now)
             if iter == 0 && (r + 1) % (config.update_rounds / 5).max(1) == 0 {
-                let dcsr_res = verify_dcsr(&dcsr_graph, config.num_nodes);
+                let dcsr_res = verify_dcsr(&mut dcsr_graph, config.num_nodes);
                 let naive_res = verify_naive_csr(&naive_graph, config.num_nodes);
                 assert_eq!(dcsr_res, naive_res, "Mismatch at round {}", r + 1);
             }

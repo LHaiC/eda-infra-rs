@@ -1,4 +1,5 @@
 use ulib::{Device, UVec, AsUPtr};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct RelocationOp {
@@ -31,6 +32,10 @@ pub trait MemPolicy: Send + Sync {
     fn start_ptr(&self, device: Device) -> *const usize;
 
     fn size_ptr(&self, device: Device) -> *const usize;
+
+    fn get_dirty_ranges(&self) -> &BTreeMap<usize, usize>;
+
+    fn clear_dirty_ranges(&mut self);
 }
 
 
@@ -40,6 +45,7 @@ pub struct VanillaLogPolicy {
     num_nodes: usize,
     total_size: usize,
     total_capacity: usize,
+    dirty_ranges: BTreeMap<usize, usize>,
 }
 
 impl MemPolicy for VanillaLogPolicy {
@@ -50,6 +56,7 @@ impl MemPolicy for VanillaLogPolicy {
             num_nodes: 0,
             total_size: 0,
             total_capacity: 0,
+            dirty_ranges: BTreeMap::new(),
         }
     }
 
@@ -65,6 +72,7 @@ impl MemPolicy for VanillaLogPolicy {
             num_nodes,
             total_size: 0,
             total_capacity: 0,
+            dirty_ranges: BTreeMap::new(),
         }
     }
 
@@ -90,6 +98,7 @@ impl MemPolicy for VanillaLogPolicy {
         let device = Device::CPU;
         let old_num_nodes = self.num_nodes;
         let mut offset = self.total_capacity;
+        let old_offset = offset;
         let mut total_size = self.total_size;
 
         unsafe {
@@ -112,6 +121,7 @@ impl MemPolicy for VanillaLogPolicy {
             self.node_size[node_id] = new_size;
             offset += new_size;
         }
+        self.add_dirty_range(old_offset, offset);
         self.num_nodes = new_num_nodes;
         self.total_size = total_size;
         self.total_capacity = offset;
@@ -175,5 +185,52 @@ impl MemPolicy for VanillaLogPolicy {
 
     fn size_ptr(&self, device: Device) -> *const usize {
         self.node_size.as_uptr(device)
+    }
+
+    fn get_dirty_ranges(&self) -> &BTreeMap<usize, usize> {
+        &self.dirty_ranges
+    }
+
+    fn clear_dirty_ranges(&mut self) {
+        self.dirty_ranges.clear();
+    }
+}
+
+impl VanillaLogPolicy {
+    /// Add a dirty range with greedy merging.
+    fn add_dirty_range(&mut self, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+
+        let mut new_start = start;
+        let mut new_end = end;
+        let mut to_remove = Vec::new();
+
+        // Check if we can merge with the previous range (ends at or overlaps start)
+        if let Some((&prev_start, &prev_end)) = self.dirty_ranges.range(..=start).next_back() {
+            if prev_end >= start {
+                // Adjacent or overlapping: merge
+                new_start = prev_start;
+                new_end = new_end.max(prev_end);
+                to_remove.push(prev_start);
+            }
+        }
+
+        // Check and merge with all subsequent ranges that overlap or are adjacent
+        for (&next_start, &next_end) in self.dirty_ranges.range(start..) {
+            if next_start <= new_end {
+                new_end = new_end.max(next_end);
+                to_remove.push(next_start);
+            } else {
+                break;
+            }
+        }
+
+        // Remove merged ranges and insert the new merged range
+        for key in to_remove {
+            self.dirty_ranges.remove(&key);
+        }
+        self.dirty_ranges.insert(new_start, new_end);
     }
 }

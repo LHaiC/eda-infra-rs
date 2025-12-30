@@ -422,6 +422,70 @@ impl<T: UniversalCopy> UVecInternal<T> {
         }
         self.valid_flag[device.to_id()] = true;
     }
+
+    #[cfg(feature = "cuda")]
+    unsafe fn copy_range_to_device(
+        &mut self,
+        src_device: Device,
+        dst_device: Device,
+        src_range: (usize, usize),
+    ) {
+        use Device::*;
+        let is_none = match dst_device {
+            CPU => self.data_cpu.is_none(),
+            #[cfg(feature = "cuda")]
+            CUDA(c) => self.data_cuda[c as usize].is_none()
+        };
+        if is_none {
+            unsafe { self.alloc_uninitialized(dst_device); }
+        }
+
+        let (start, end) = if is_none {
+            (0, self.len)
+        } else {
+            src_range
+        };
+
+        match (src_device, dst_device) {
+            (CPU, CPU) => {},
+            #[cfg(feature = "cuda")]
+            (CPU, CUDA(c)) => {
+                let _context = CUDA(c).get_context();
+                let c = c as usize;
+                self.data_cuda[c].as_mut().unwrap().index(start..end)
+                    .copy_from(
+                        &self.data_cpu.as_ref().unwrap()[start..end]
+                    ).unwrap();
+            },
+            #[cfg(feature = "cuda")]
+            (CUDA(c), CPU) => {
+                let _context = CUDA(c).get_context();
+                let c = c as usize;
+                self.data_cuda[c].as_ref().unwrap().index(start..end)
+                    .copy_to(
+                        &mut self.data_cpu.as_mut().unwrap()[start..end]
+                    ).unwrap();
+                CurrentContext::synchronize().unwrap();
+            },
+            #[cfg(feature = "cuda")]
+            (CUDA(c1), CUDA(c2)) => {
+                let _context = CUDA(c2).get_context();
+                let (c1, c2) = (c1 as usize, c2 as usize);
+                assert_ne!(c1, c2);
+                // unsafe is used to access one mutable element.
+                // safety guaranteed by the above `assert_ne!`.
+                let c2_mut = unsafe {
+                    &mut *(self.data_cuda[c2].as_mut().unwrap()
+                           as *const DeviceBuffer<T>
+                           as *mut DeviceBuffer<T>)
+                };
+                self.data_cuda[c1].as_ref().unwrap().index(start..end)
+                    .copy_to(
+                        &mut c2_mut.index(start..end)
+                    ).unwrap();
+            }
+        }
+    }
 }
 
 impl<T: UniversalCopy> UVec<T> {
@@ -471,6 +535,17 @@ impl<T: UniversalCopy> UVec<T> {
         }
         // only this is valid.
         intl.valid_flag[..].fill(false);
+        intl.valid_flag[device.to_id()] = true;
+    }
+
+    /// Mark a device's data as valid without any copy operation.
+    ///
+    /// This is unsafe because it assumes that the data on the specified device
+    /// is already up-to-date. Use with caution, typically after performing
+    /// device-specific memory operations.
+    #[inline]
+    pub unsafe fn mark_valid(&mut self, device: Device) {
+        let intl = self.get_intl_mut();
         intl.valid_flag[device.to_id()] = true;
     }
 
@@ -665,6 +740,51 @@ impl<T: UniversalCopy> UVec<T> {
         intl.len = len;
         intl.valid_flag.fill(false);
         intl.valid_flag[device.to_id()] = true;
+    }
+
+    /// Copy a range of data from one device to another without copying the entire buffer.
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe because:
+    /// 1. The caller must ensure that `src_range` is within bounds of the vector
+    /// 2. The caller must ensure that the destination device buffer is already allocated
+    /// 3. The caller must ensure that the source device has valid data
+    /// 4. This bypasses the normal `valid_flag` management - the caller is responsible
+    ///    for calling `mark_valid` after the copy if needed
+    ///
+    /// # Arguments
+    ///
+    /// * `src_device` - The device to copy data from
+    /// * `dst_device` - The device to copy data to
+    /// * `src_range` - The range (start, end) to copy from the source device
+    #[cfg(feature = "cuda")]
+    pub unsafe fn copy_range_to_device(
+        &mut self,
+        src_device: Device,
+        dst_device: Device,
+        src_range: (usize, usize),
+    ) {
+        if src_device == dst_device {
+            return;
+        }
+        let intl = unsafe {
+            self.get_intl_mut_unsafe()
+        };
+        if !intl.valid_flag[src_device.to_id()] {
+            panic!("source device data is not valid for copy_range_to_device");
+        }
+        let (start, end) = src_range;
+        if start >= end || end > intl.len {
+            panic!("invalid range for copy_range_to_device");
+        }
+        let intl_erased = unsafe {
+            &mut *(self.get_intl_mut_unsafe() as *mut UVecInternal<T>)
+        };
+        let locked = intl.read_locks[dst_device.to_id()]
+            .lock().unwrap();
+        intl_erased.copy_range_to_device(src_device, dst_device, src_range);
+        drop(locked);
     }
 
     #[inline]

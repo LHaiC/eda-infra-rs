@@ -94,14 +94,15 @@ impl<T: UniversalCopy> FlatMem<T> {
                 None => continue,
             };
 
-            for i in 0..size.min(data.len()) {
+            let write_len = size.min(data.len());
+            for i in 0..write_len {
                 slice[offset + i] = data[i];
             }
         }
     }
 
     #[inline]
-    pub fn fill_from_vecvec<P: MemPolicy>(
+    pub fn init_from_vecvec<P: MemPolicy>(
         &mut self,
         vecvec: &Vec<Vec<T>>,
         policy: &P,
@@ -119,20 +120,42 @@ impl<T: UniversalCopy> FlatMem<T> {
                 None => continue,
             };
 
-            for i in 0..size.min(data.len()) {
+            let write_len = size.min(data.len());
+            for i in 0..write_len {
                 slice[offset + i] = data[i];
             }
         }
     }
-    
+
     #[inline]
     pub fn clear(&mut self) {
         unsafe { self.data.set_len(0); }
     }
 
+    /// Unsafe: Copy only dirty ranges from CPU to GPU.
+    ///
+    /// This function assumes that:
+    /// 1. The CPU data is valid and up-to-date
+    /// 2. The GPU buffer is already allocated with sufficient capacity
+    /// 3. The dirty_ranges contain valid ranges within the buffer
+    ///
+    /// After this operation, the GPU data is marked as valid.
+    #[cfg(feature = "cuda")]
+    pub unsafe fn copy_dirty_ranges_to_gpu(&mut self, device: Device, dirty_ranges: &BTreeMap<usize, usize>) {
+        for (&start, &end) in dirty_ranges.iter() {
+            self.data.copy_range_to_device(Device::CPU, device, (start, end));
+        }
+        self.data.mark_valid(device);
+    }
+
     #[inline]
-    pub fn into_uvec(self) -> UVec<T> {
+    pub fn to_uvec(self) -> UVec<T> {
         self.data
+    }
+
+    #[inline]
+    pub fn to_vec(self) -> Vec<T> {
+        self.data.to_vec()
     }
 }
 
@@ -146,7 +169,9 @@ impl<T: UniversalCopy> Default for FlatMem<T> {
 impl<T: UniversalCopy + Clone> Clone for FlatMem<T> {
     #[inline]
     fn clone(&self) -> Self {
-        Self { data: self.data.clone() }
+        Self {
+            data: self.data.clone(),
+        }
     }
 }
 

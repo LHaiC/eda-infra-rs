@@ -1,5 +1,6 @@
 use dcsr::{DynamicCSR, MemPolicy, VanillaLogPolicy};
 use ulib::Device;
+use std::collections::BTreeMap;
 
 #[test]
 fn test_dynamic_csr_new() {
@@ -287,6 +288,11 @@ fn test_dynamic_csr_with_custom_policy() {
         fn total_capacity(&self) -> usize { 0 }
         fn start_ptr(&self, _device: Device) -> *const usize { std::ptr::null() }
         fn size_ptr(&self, _device: Device) -> *const usize { std::ptr::null() }
+        fn get_dirty_ranges(&self) -> &BTreeMap<usize, usize> {
+            static EMPTY_MAP: BTreeMap<usize, usize> = BTreeMap::new();
+            &EMPTY_MAP
+        }
+        fn clear_dirty_ranges(&mut self) {}
     }
 
     let csr: DynamicCSR<i32, TestPolicy> = DynamicCSR::new();

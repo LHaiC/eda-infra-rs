@@ -2,12 +2,14 @@ use ulib::{Device, UniversalCopy, AsUPtr, AsUPtrMut};
 use std::collections::BTreeMap;
 use std::cmp::PartialEq;
 use std::default::Default;
+use std::fmt::Debug;
 use crate::flatmem::FlatMem;
 use crate::policy::{MemPolicy, VanillaLogPolicy};
+use std::time::Instant;
 
 pub struct DynamicCSR<T, P = VanillaLogPolicy>
 where
-    T: UniversalCopy + PartialEq + Default,
+    T: UniversalCopy + PartialEq + Default + Debug,
     P: MemPolicy,
 {
     mem: FlatMem<T>,
@@ -15,7 +17,7 @@ where
     pending: BTreeMap<usize, Vec<T>>,
 }
 
-impl<T: UniversalCopy + PartialEq + Default, P: MemPolicy> DynamicCSR<T, P> {
+impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T, P> {
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -120,12 +122,20 @@ impl<T: UniversalCopy + PartialEq + Default, P: MemPolicy> DynamicCSR<T, P> {
     }
 
     #[inline]
-    pub fn data_ptr(&self, device: Device) -> *const T {
+    pub fn data_ptr(&mut self, device: Device) -> *const T {
+        unsafe {
+            self.mem.copy_dirty_ranges_to_gpu(device, self.policy.get_dirty_ranges());
+        }
+        self.policy.clear_dirty_ranges();
         self.mem.as_uptr(device)
     }
 
     #[inline]
     pub fn data_mut_ptr(&mut self, device: Device) -> *mut T {
+        unsafe {
+            self.mem.copy_dirty_ranges_to_gpu(device, self.policy.get_dirty_ranges());
+        }
+        self.policy.clear_dirty_ranges();
         self.mem.as_mut_uptr(device)
     }
 

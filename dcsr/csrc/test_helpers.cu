@@ -1,24 +1,25 @@
 // test_helpers.cu - CUDA kernels for testing DCSR access patterns
 #include <cstdint>
+#include <stdio.h>
 #include "utils/cuda-utils.hpp"
 
-using usize_t = size_t;
+typedef uintptr_t usize;
 
 __global__ void verify_dcsr_sum_kernel(
     uint32_t num_nodes,
     const int* d_data,
-    const usize_t* d_start,
-    const usize_t* d_size,
+    const usize* d_start,
+    const usize* d_size,
     int* d_results
 ) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= num_nodes) return;
 
     int sum = 0;
-    usize_t start = d_start[tid];
-    usize_t size = d_size[tid];
+    usize start = d_start[tid];
+    usize size = d_size[tid];
 
-    for (usize_t i = 0; i < size; ++i) {
+    for (usize i = 0; i < size; ++i) {
         sum += d_data[start + i];
     }
     d_results[tid] = sum;
@@ -47,8 +48,8 @@ extern "C" {
     void dcsr_test_verify_sum(
         uint32_t num_nodes,
         const int* d_data,
-        const usize_t* d_start,
-        const usize_t* d_size,
+        const usize* d_start,
+        const usize* d_size,
         int* host_results,
         uint32_t count
     ) {
