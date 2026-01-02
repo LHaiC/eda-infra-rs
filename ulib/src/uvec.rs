@@ -42,8 +42,7 @@ impl<T: UniversalCopy> UVec<T> {
 /// defines the reallocation heuristic. current we allocate 50\% more.
 #[inline]
 fn realloc_heuristic(new_len: usize) -> usize {
-    // (new_len as f64 * 1.5).round() as usize
-    new_len
+    (new_len as f64 * 1.5).round() as usize
 }
 
 #[inline]

@@ -110,6 +110,7 @@ impl PolicyCompareResult {
     }
 }
 
+#[cfg(feature = "cuda")]
 extern "C" {
     fn dcsr_test_verify_sum(
         num_nodes: u32,
@@ -122,6 +123,7 @@ extern "C" {
 }
 
 // Rust wrappers for the FFI calls
+#[cfg(feature = "cuda")]
 fn verify_dcsr<P: MemPolicy>(dcsr: &mut DynamicCSR<i32, P>, count: u32) -> Vec<i32> {
     let mut results = vec![0i32; count as usize];
     let device = Device::CUDA(0);
@@ -138,6 +140,7 @@ fn verify_dcsr<P: MemPolicy>(dcsr: &mut DynamicCSR<i32, P>, count: u32) -> Vec<i
 // SECTION 1: Single Benchmark Run
 // ----------------------------------------------------------------------------
 
+#[cfg(feature = "cuda")]
 fn run_single_benchmark<P1: MemPolicy, P2: MemPolicy>(
     config: &BenchmarkConfig,
 ) -> PolicyCompareResult
@@ -301,9 +304,9 @@ where
 // SECTION 2: Main Entry Point
 // ----------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda"))]
 fn main() {
-    let config_path = "tests/benchmark_config_test.json";
+    let config_path = "tests/benchmark_config_small.json";
 
     let suite = if Path::new(config_path).exists() {
         BenchmarkSuite::from_json(config_path).expect("Failed to load benchmark config")
@@ -342,6 +345,7 @@ fn main() {
 // SECTION 3: Unit Tests
 // ----------------------------------------------------------------------------
 
+#[cfg(feature = "cuda")]
 #[test]
 fn run_policy_compare_benchmark() {
     main();

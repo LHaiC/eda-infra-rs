@@ -97,6 +97,7 @@ impl BenchmarkResult {
 // SECTION 1: FFI Verification Helpers
 // ----------------------------------------------------------------------------
 
+#[cfg(feature = "cuda")]
 extern "C" {
     fn dcsr_test_verify_sum(
         num_nodes: u32,
@@ -115,6 +116,7 @@ extern "C" {
 }
 
 // Rust wrappers for the FFI calls
+#[cfg(feature = "cuda")]
 fn verify_dcsr(dcsr: &mut DynamicCSR<i32, VanillaLogPolicy>, count: u32) -> Vec<i32> {
     let mut results = vec![0i32; count as usize];
     let device = Device::CUDA(0);
@@ -127,6 +129,7 @@ fn verify_dcsr(dcsr: &mut DynamicCSR<i32, VanillaLogPolicy>, count: u32) -> Vec<
     results
 }
 
+#[cfg(feature = "cuda")]
 fn verify_naive_csr(csr: &NaiveCsr<i32>, count: u32) -> Vec<i32> {
     let mut results = vec![0i32; count as usize];
     let _ctx = csr.device.get_context();
@@ -142,6 +145,7 @@ fn verify_naive_csr(csr: &NaiveCsr<i32>, count: u32) -> Vec<i32> {
 // SECTION 2: The Baseline - Naive CSR implemented with UVec
 // ----------------------------------------------------------------------------
 
+#[cfg(feature = "cuda")]
 struct NaiveCsr<T: UniversalCopy> {
     // --- CPU-side "Logical View" ---
     adj: Vec<Vec<T>>,
@@ -153,6 +157,7 @@ struct NaiveCsr<T: UniversalCopy> {
     device: Device,
 }
 
+#[cfg(feature = "cuda")]
 impl<T: UniversalCopy + Clone> NaiveCsr<T> {
     pub fn new(num_nodes: u32, device: Device) -> Self {
         let _ctx = device.get_context();
@@ -227,6 +232,7 @@ impl<T: UniversalCopy + Clone> NaiveCsr<T> {
 // SECTION 2: Single Benchmark Run
 // ----------------------------------------------------------------------------
 
+#[cfg(feature = "cuda")]
 fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
     let device = Device::CUDA(0);
 
@@ -350,9 +356,9 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
 // SECTION 3: Main Entry Point
 // ----------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cuda"))]
 fn main() {
-    let config_path = "tests/benchmark_config_test.json";
+    let config_path = "tests/benchmark_config_small.json";
 
     let suite = if Path::new(config_path).exists() {
         BenchmarkSuite::from_json(config_path).expect("Failed to load benchmark config")
@@ -391,6 +397,7 @@ fn main() {
 // SECTION 4: Unit Tests
 // ----------------------------------------------------------------------------
 
+#[cfg(feature = "cuda")]
 #[test]
 fn run_benchmark_suite() {
     main();

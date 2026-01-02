@@ -1,6 +1,43 @@
 use ulib::{Device, UVec, AsUPtr, AsUPtrMut};
 use std::collections::BTreeMap;
 
+/// Helper function to add a dirty range with greedy merging
+fn add_dirty_range_to_map(dirty_ranges: &mut BTreeMap<usize, usize>, start: usize, end: usize) {
+    if start >= end {
+        return;
+    }
+
+    let mut new_start = start;
+    let mut new_end = end;
+    let mut to_remove = Vec::new();
+
+    // Check if we can merge with the previous range (ends at or overlaps start)
+    if let Some((&prev_start, &prev_end)) = dirty_ranges.range(..=start).next_back() {
+        if prev_end >= start {
+            // Adjacent or overlapping: merge
+            new_start = prev_start;
+            new_end = new_end.max(prev_end);
+            to_remove.push(prev_start);
+        }
+    }
+
+    // Check and merge with all subsequent ranges that overlap or are adjacent
+    for (&next_start, &next_end) in dirty_ranges.range(start..) {
+        if next_start <= new_end {
+            new_end = new_end.max(next_end);
+            to_remove.push(next_start);
+        } else {
+            break;
+        }
+    }
+
+    // Remove merged ranges and insert the new merged range
+    for key in to_remove {
+        dirty_ranges.remove(&key);
+    }
+    dirty_ranges.insert(new_start, new_end);
+}
+
 pub trait MemPolicy: Send + Sync {
     fn new() -> Self;
 
@@ -40,8 +77,8 @@ pub trait MemPolicy: Send + Sync {
 }
 
 pub struct VanillaLogPolicy {
-    node_start: UVec<usize>,
-    node_size: UVec<usize>,
+    node_starts: UVec<usize>,
+    node_sizes: UVec<usize>,
     num_nodes: usize,
     total_size: usize,
     total_capacity: usize,
@@ -51,8 +88,8 @@ pub struct VanillaLogPolicy {
 impl MemPolicy for VanillaLogPolicy {
     fn new() -> Self {
         Self {
-            node_start: UVec::with_capacity(0, Device::CPU),
-            node_size: UVec::with_capacity(0, Device::CPU),
+            node_starts: UVec::with_capacity(0, Device::CPU),
+            node_sizes: UVec::with_capacity(0, Device::CPU),
             num_nodes: 0,
             total_size: 0,
             total_capacity: 0,
@@ -62,13 +99,13 @@ impl MemPolicy for VanillaLogPolicy {
 
     fn with_size(num_nodes: usize) -> Self {
         let device = Device::CPU;
-        let mut node_start = UVec::with_capacity(num_nodes + 1, device);
-        let mut node_size = UVec::with_capacity(num_nodes + 1, device);
-        node_start.fill(usize::MAX, device);
-        node_size.fill(0, device);
+        let mut node_starts = UVec::with_capacity(num_nodes + 1, device);
+        let mut node_sizes = UVec::with_capacity(num_nodes + 1, device);
+        node_starts.fill(usize::MAX, device);
+        node_sizes.fill(0, device);
         Self {
-            node_start,
-            node_size,
+            node_starts,
+            node_sizes,
             num_nodes,
             total_size: 0,
             total_capacity: 0,
@@ -81,21 +118,20 @@ impl MemPolicy for VanillaLogPolicy {
         let num_nodes = sizes.len();
         let mut offset = 0usize;
         unsafe {
-            self.node_start.resize_uninit_nopreserve(num_nodes + 1, device);
-            self.node_size.resize_uninit_nopreserve(num_nodes + 1, device);
+            self.node_starts.resize_uninit_nopreserve(num_nodes + 1, device);
+            self.node_sizes.resize_uninit_nopreserve(num_nodes + 1, device);
         }
         for (i, &size) in sizes.iter().enumerate() {
-            self.node_start[i] = offset;
-            self.node_size[i] = size;
+            self.node_starts[i] = offset;
+            self.node_sizes[i] = size;
             offset += size;
         }
         self.num_nodes = num_nodes;
         self.total_size = offset;
         self.total_capacity = offset;
         self.dirty_ranges.clear();
-        self.add_dirty_range(0, offset);
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, offset);
     }
-
     fn realloc(&mut self, new_num_nodes: usize, updates: &[(usize, usize)]) {
         let device = Device::CPU;
         let old_num_nodes = self.num_nodes;
@@ -104,26 +140,27 @@ impl MemPolicy for VanillaLogPolicy {
         let mut total_size = self.total_size;
 
         unsafe {
-            self.node_start.resize_uninit_preserve(new_num_nodes + 1, device);
-            self.node_size.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_starts.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_sizes.resize_uninit_preserve(new_num_nodes + 1, device);
         }
 
         for i in old_num_nodes..new_num_nodes {
-            self.node_start[i] = usize::MAX;
-            self.node_size[i] = 0;
+            self.node_starts[i] = usize::MAX;
+            self.node_sizes[i] = 0;
         }
 
         for &(node_id, new_size) in updates.iter() {
             if node_id < old_num_nodes {
-                total_size = total_size.wrapping_sub(self.node_size[node_id]).wrapping_add(new_size);
+                total_size = total_size.wrapping_sub(self.node_sizes[node_id]).wrapping_add(new_size);
             } else {
                 total_size += new_size;
             }
-            self.node_start[node_id] = offset;
-            self.node_size[node_id] = new_size;
+            self.node_starts[node_id] = offset;
+            self.node_sizes[node_id] = new_size;
             offset += new_size;
         }
-        self.add_dirty_range(old_offset, offset);
+
+        add_dirty_range_to_map(&mut self.dirty_ranges, old_offset, offset);
         self.num_nodes = new_num_nodes;
         self.total_size = total_size;
         self.total_capacity = offset;
@@ -134,38 +171,44 @@ impl MemPolicy for VanillaLogPolicy {
         let mut offset = 0usize;
 
         unsafe {
-            self.node_start.resize_uninit_preserve(new_num_nodes + 1, device);
-            self.node_size.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_starts.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_sizes.resize_uninit_preserve(new_num_nodes + 1, device);
         }
 
+        // Update sizes for nodes in updates, keep old sizes for others
         for &(node_id, new_size) in updates.iter() {
-            self.node_size[node_id] = new_size;
+            self.node_sizes[node_id] = new_size;
+        }
+
+        // Initialize new nodes with size 0
+        for i in self.num_nodes..new_num_nodes {
+            self.node_sizes[i] = 0;
         }
 
         for i in 0..new_num_nodes {
-            self.node_start[i] = offset;
-            offset += self.node_size[i];
+            self.node_starts[i] = offset;
+            offset += self.node_sizes[i];
         }
 
         self.num_nodes = new_num_nodes;
         self.total_size = offset;
         self.total_capacity = offset;
         self.dirty_ranges.clear();
-        self.add_dirty_range(0, offset);
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, offset);
     }
 
     fn get_node_offset(&self, node_id: usize) -> Option<usize> {
         if node_id >= self.num_nodes {
             return None;
         }
-        Some(self.node_start[node_id])
+        Some(self.node_starts[node_id])
     }
 
     fn get_node_size(&self, node_id: usize) -> Option<usize> {
         if node_id >= self.num_nodes {
             return None;
         }
-        Some(self.node_size[node_id])
+        Some(self.node_sizes[node_id])
     }
 
     fn num_nodes(&self) -> usize {
@@ -181,23 +224,23 @@ impl MemPolicy for VanillaLogPolicy {
     }
 
     fn start_ptr(&self, device: Device) -> *const usize {
-        self.node_start.as_uptr(device)
+        self.node_starts.as_uptr(device)
     }
 
     fn size_ptr(&self, device: Device) -> *const usize {
-        self.node_size.as_uptr(device)
+        self.node_sizes.as_uptr(device)
     }
 
     fn start_mut_ptr(&mut self, device: Device) -> *mut usize {
-        self.node_start.as_mut_uptr(device)
+        self.node_starts.as_mut_uptr(device)
     }
 
     fn size_mut_ptr(&mut self, device: Device) -> *mut usize {
-        self.node_size.as_mut_uptr(device)
+        self.node_sizes.as_mut_uptr(device)
     }
 
     fn get_node_starts(&self) -> Vec<usize> {
-        self.node_start.to_vec()
+        self.node_starts.to_vec()
     }
 
     fn get_dirty_ranges(&self) -> &BTreeMap<usize, usize> {
@@ -209,61 +252,13 @@ impl MemPolicy for VanillaLogPolicy {
     }
 
     fn mem_usage(&self) -> usize {
-        (self.node_start.capacity() + self.node_size.capacity()) * std::mem::size_of::<usize>()
-    }
-}
-
-impl VanillaLogPolicy {
-    /// Add a dirty range with greedy merging.
-    fn add_dirty_range(&mut self, start: usize, end: usize) {
-        if start >= end {
-            return;
-        }
-
-        let mut new_start = start;
-        let mut new_end = end;
-        let mut to_remove = Vec::new();
-
-        // Check if we can merge with the previous range (ends at or overlaps start)
-        if let Some((&prev_start, &prev_end)) = self.dirty_ranges.range(..=start).next_back() {
-            if prev_end >= start {
-                // Adjacent or overlapping: merge
-                new_start = prev_start;
-                new_end = new_end.max(prev_end);
-                to_remove.push(prev_start);
-            }
-        }
-
-        // Check and merge with all subsequent ranges that overlap or are adjacent
-        for (&next_start, &next_end) in self.dirty_ranges.range(start..) {
-            if next_start <= new_end {
-                new_end = new_end.max(next_end);
-                to_remove.push(next_start);
-            } else {
-                break;
-            }
-        }
-
-        // Remove merged ranges and insert the new merged range
-        for key in to_remove {
-            self.dirty_ranges.remove(&key);
-        }
-        self.dirty_ranges.insert(new_start, new_end);
-    }
-
-    pub fn update_offsets_direct(&mut self, new_offsets: &[usize], new_total_size: usize) {
-        for (i, &offset) in new_offsets.iter().enumerate() {
-            if i < self.num_nodes {
-                self.node_start[i] = offset;
-            }
-        }
-        self.total_capacity = new_total_size;
+        (self.node_starts.capacity() + self.node_sizes.capacity()) * std::mem::size_of::<usize>()
     }
 }
 
 pub struct PowerOfTwoSlabPolicy {
-    node_start: UVec<usize>,
-    node_size: UVec<usize>,
+    node_starts: UVec<usize>,
+    node_sizes: UVec<usize>,
     num_nodes: usize,
 
     // here use Vec<Vec<usize>> as free lists for each size class
@@ -331,8 +326,8 @@ impl PowerOfTwoSlabPolicy {
 impl MemPolicy for PowerOfTwoSlabPolicy {
     fn new() -> Self {
         Self {
-            node_start: UVec::with_capacity(0, ulib::Device::CPU),
-            node_size: UVec::with_capacity(0, ulib::Device::CPU),
+            node_starts: UVec::with_capacity(0, ulib::Device::CPU),
+            node_sizes: UVec::with_capacity(0, ulib::Device::CPU),
             num_nodes: 0,
             collection_order_threshold: 2,
             num_size_classes: 16,
@@ -345,13 +340,13 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
 
     fn with_size(num_nodes: usize) -> Self {
         let device = ulib::Device::CPU;
-        let mut node_start = UVec::with_capacity(num_nodes + 1, device);
-        let mut node_size = UVec::with_capacity(num_nodes + 1, device);
-        node_start.fill(usize::MAX, device);
-        node_size.fill(0, device);
+        let mut node_starts = UVec::with_capacity(num_nodes + 1, device);
+        let mut node_sizes = UVec::with_capacity(num_nodes + 1, device);
+        node_starts.fill(usize::MAX, device);
+        node_sizes.fill(0, device);
         Self {
-            node_start,
-            node_size,
+            node_starts,
+            node_sizes,
             num_nodes,
             collection_order_threshold: 2,
             num_size_classes: 16,
@@ -367,12 +362,12 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
         let num_nodes = sizes.len();
         let mut offset = 0usize;
         unsafe {
-            self.node_start.resize_uninit_nopreserve(num_nodes + 1, device);
-            self.node_size.resize_uninit_nopreserve(num_nodes + 1, device);
+            self.node_starts.resize_uninit_nopreserve(num_nodes + 1, device);
+            self.node_sizes.resize_uninit_nopreserve(num_nodes + 1, device);
         }
         for (i, &size) in sizes.iter().enumerate() {
-            self.node_start[i] = offset;
-            self.node_size[i] = size;
+            self.node_starts[i] = offset;
+            self.node_sizes[i] = size;
             offset += size;
         }
         self.num_nodes = num_nodes;
@@ -382,7 +377,7 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
             free_list.clear();
         }
         self.dirty_ranges.clear();
-        self.add_dirty_range(0, offset);
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, offset);
     }
 
     fn realloc(&mut self, new_num_nodes: usize, updates: &[(usize, usize)]) {
@@ -392,25 +387,25 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
         let old_offset = offset;
         let mut total_size = self.total_size;
         unsafe {
-            self.node_start.resize_uninit_preserve(new_num_nodes + 1, device);
-            self.node_size.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_starts.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_sizes.resize_uninit_preserve(new_num_nodes + 1, device);
         }
         for i in old_num_nodes..new_num_nodes {
-            self.node_start[i] = usize::MAX;
-            self.node_size[i] = 0;
+            self.node_starts[i] = usize::MAX;
+            self.node_sizes[i] = 0;
         }
 
         // Pass 1: collect old nodes to free lists
         for &(node_id, new_size) in updates.iter() {
             if node_id < old_num_nodes {
-                total_size = total_size.wrapping_sub(self.node_size[node_id]).wrapping_add(new_size);
-                let old_offset = self.node_start[node_id];
-                let old_size = self.node_size[node_id];
+                total_size = total_size.wrapping_sub(self.node_sizes[node_id]).wrapping_add(new_size);
+                let old_offset = self.node_starts[node_id];
+                let old_size = self.node_sizes[node_id];
                 self.push_free(old_offset, old_size);
             } else {
                 total_size += new_size;
-                self.node_start[node_id] = offset;
-                self.node_size[node_id] = new_size;
+                self.node_starts[node_id] = offset;
+                self.node_sizes[node_id] = new_size;
                 offset += new_size;
             }
         }
@@ -420,20 +415,20 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
             if node_id < old_num_nodes {
                 if let Some(free_offset) = self.pop_free(new_size) {
                     // Allocate from free list
-                    self.node_start[node_id] = free_offset;
-                    self.node_size[node_id] = new_size;
+                    self.node_starts[node_id] = free_offset;
+                    self.node_sizes[node_id] = new_size;
                     // Read next free from the first element
-                    self.add_dirty_range(free_offset, free_offset + new_size);
+                    add_dirty_range_to_map(&mut self.dirty_ranges, free_offset, free_offset + new_size);
                     continue;
                 }
                 // No suitable free block, append
-                self.node_start[node_id] = offset;
-                self.node_size[node_id] = new_size;
+                self.node_starts[node_id] = offset;
+                self.node_sizes[node_id] = new_size;
                 offset += new_size;
             }
         }
 
-        self.add_dirty_range(old_offset, offset);
+        add_dirty_range_to_map(&mut self.dirty_ranges, old_offset, offset);
         self.num_nodes = new_num_nodes;
         self.total_size = total_size;
         self.total_capacity = offset;
@@ -447,38 +442,38 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
         let mut offset = 0usize;
 
         unsafe {
-            self.node_start.resize_uninit_preserve(new_num_nodes + 1, device);
-            self.node_size.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_starts.resize_uninit_preserve(new_num_nodes + 1, device);
+            self.node_sizes.resize_uninit_preserve(new_num_nodes + 1, device);
         }
 
         for &(node_id, new_size) in updates.iter() {
-            self.node_size[node_id] = new_size;
+            self.node_sizes[node_id] = new_size;
         }
 
         for i in 0..new_num_nodes {
-            self.node_start[i] = offset;
-            offset += self.node_size[i];
+            self.node_starts[i] = offset;
+            offset += self.node_sizes[i];
         }
 
         self.num_nodes = new_num_nodes;
         self.total_size = offset;
         self.total_capacity = offset;
         self.dirty_ranges.clear();
-        self.add_dirty_range(0, offset);
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, offset);
     }
 
     fn get_node_offset(&self, node_id: usize) -> Option<usize> {
         if node_id >= self.num_nodes {
             return None;
         }
-        Some(self.node_start[node_id])
+        Some(self.node_starts[node_id])
     }
 
     fn get_node_size(&self, node_id: usize) -> Option<usize> {
         if node_id >= self.num_nodes {
             return None;
         }
-        Some(self.node_size[node_id])
+        Some(self.node_sizes[node_id])
     }
 
     fn num_nodes(&self) -> usize {
@@ -494,23 +489,23 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
     }
 
     fn start_ptr(&self, device: ulib::Device) -> *const usize {
-        self.node_start.as_uptr(device)
+        self.node_starts.as_uptr(device)
     }
 
     fn size_ptr(&self, device: ulib::Device) -> *const usize {
-        self.node_size.as_uptr(device)
+        self.node_sizes.as_uptr(device)
     }
 
     fn start_mut_ptr(&mut self, device: Device) -> *mut usize {
-        self.node_start.as_mut_uptr(device)
+        self.node_starts.as_mut_uptr(device)
     }
 
     fn size_mut_ptr(&mut self, device: Device) -> *mut usize {
-        self.node_size.as_mut_uptr(device)
+        self.node_sizes.as_mut_uptr(device)
     }
 
     fn get_node_starts(&self) -> Vec<usize> {
-        self.node_start.to_vec()
+        self.node_starts.to_vec()
     }
 
     fn get_dirty_ranges(&self) -> &BTreeMap<usize, usize> {
@@ -522,54 +517,6 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
     }
 
     fn mem_usage(&self) -> usize {
-        (self.node_start.capacity() + self.node_size.capacity()) * std::mem::size_of::<usize>()
-    }
-}
-
-impl PowerOfTwoSlabPolicy {
-    /// Add a dirty range with greedy merging.
-    fn add_dirty_range(&mut self, start: usize, end: usize) {
-        if start >= end {
-            return;
-        }
-
-        let mut new_start = start;
-        let mut new_end = end;
-        let mut to_remove = Vec::new();
-
-        // Check if we can merge with the previous range (ends at or overlaps start)
-        if let Some((&prev_start, &prev_end)) = self.dirty_ranges.range(..=start).next_back() {
-            if prev_end >= start {
-                // Adjacent or overlapping: merge
-                new_start = prev_start;
-                new_end = new_end.max(prev_end);
-                to_remove.push(prev_start);
-            }
-        }
-
-        // Check and merge with all subsequent ranges that overlap or are adjacent
-        for (&next_start, &next_end) in self.dirty_ranges.range(start..) {
-            if next_start <= new_end {
-                new_end = new_end.max(next_end);
-                to_remove.push(next_start);
-            } else {
-                break;
-            }
-        }
-
-        // Remove merged ranges and insert the new merged range
-        for key in to_remove {
-            self.dirty_ranges.remove(&key);
-        }
-        self.dirty_ranges.insert(new_start, new_end);
-    }
-
-    pub fn update_offsets_direct(&mut self, new_offsets: &[usize], new_total_size: usize) {
-        for (i, &offset) in new_offsets.iter().enumerate() {
-            if i < self.num_nodes {
-                self.node_start[i] = offset;
-            }
-        }
-        self.total_capacity = new_total_size;
+        (self.node_starts.capacity() + self.node_sizes.capacity()) * std::mem::size_of::<usize>()
     }
 }

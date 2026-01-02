@@ -1,26 +1,27 @@
-use ulib::{Device, UniversalCopy, AsUPtr, AsUPtrMut};
+use ulib::{Device, UniversalCopy};
 use std::collections::BTreeMap;
 use std::cmp::PartialEq;
 use std::default::Default;
 use std::fmt::Debug;
-use crate::flatmem::FlatMem;
+use crate::flatmem::{FlatStorage, FlatMem};
 use crate::policy::MemPolicy;
 
-pub struct DynamicCSR<T, P>
+pub struct DynamicCSR<T, P, S = FlatMem<T>>
 where
     T: UniversalCopy + PartialEq + Default + Debug,
     P: MemPolicy,
+    S: FlatStorage<T>,
 {
-    mem: FlatMem<T>,
+    mem: S,
     policy: P,
     pending: BTreeMap<usize, Vec<T>>,
 }
 
-impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T, P> {
+impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorage<T> + Default> DynamicCSR<T, P, S> {
     #[inline]
     pub fn new() -> Self {
         Self {
-            mem: FlatMem::new(),
+            mem: S::default(),
             policy: P::new(),
             pending: BTreeMap::new(),
         }
@@ -29,7 +30,7 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T,
     #[inline]
     pub fn with_size(num_nodes: usize) -> Self {
         Self {
-            mem: FlatMem::new(),
+            mem: S::default(),
             policy: P::with_size(num_nodes),
             pending: BTreeMap::new(),
         }
@@ -38,7 +39,7 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T,
     #[inline]
     pub fn with_policy(policy: P) -> Self {
         Self {
-            mem: FlatMem::new(),
+            mem: S::default(),
             policy,
             pending: BTreeMap::new(),
         }
@@ -51,7 +52,7 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T,
 
             let data = match (offset, size) {
                 (Some(off), Some(len)) if len > 0 && off + len <= self.mem.len() => {
-                    self.mem[off..off + len].to_vec()
+                    self.mem.as_ref()[off..off + len].to_vec()
                 }
                 _ => Vec::new(),
             };
@@ -120,8 +121,7 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T,
 
         if self.need_compact() {
             // compact stragegy
-            let old_data = self.mem.to_vec();
-            let old_node_start = self.policy.get_node_starts();
+            let old_node_starts = self.policy.get_node_starts();
 
             self.policy.compact(new_num_nodes, &updates);
 
@@ -132,7 +132,7 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T,
                 }
             }
 
-            self.mem.compact(old_data, old_node_start, &self.pending, &self.policy);
+            self.mem.compact(old_node_starts, &self.pending, &self.policy);
         } else {
             // realloc strategy
             self.policy.realloc(new_num_nodes, &updates);
@@ -156,14 +156,19 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy> DynamicCSR<T,
     }
 
     #[inline]
-    pub fn mem(&self) -> &FlatMem<T> {
+    pub fn mem(&self) -> &S {
         &self.mem
     }
 
     #[inline]
     fn sync_data_dirty_ranges(&mut self, device: Device) {
-        unsafe {
-            self.mem.copy_dirty_ranges_to_gpu(device, self.policy.get_dirty_ranges());
+        #[cfg(feature = "cuda")]
+        {
+            if matches!(device, Device::CUDA(_)) {
+                unsafe {
+                    self.mem.copy_dirty_ranges_to_gpu(device, self.policy.get_dirty_ranges());
+                }
+            }
         }
         self.policy.clear_dirty_ranges();
     }
