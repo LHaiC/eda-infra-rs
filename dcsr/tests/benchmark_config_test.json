@@ -5,8 +5,8 @@
       "avg_degree": 10,
       "super_node_percent": 0.05,
       "super_node_degree": 200,
-      "update_rounds": 10,
-      "batch_size": 100,
+      "update_rounds": 20,
+      "batch_size": 1000,
       "iterations": 3
     }
   ]

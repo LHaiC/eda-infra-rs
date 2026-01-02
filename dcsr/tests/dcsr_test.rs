@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 #[test]
 fn test_dynamic_csr_new() {
-    let csr: DynamicCSR<i32> = DynamicCSR::new();
+    let csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
     assert_eq!(csr.policy().num_nodes(), 0);
     assert_eq!(csr.mem().len(), 0);
 }
@@ -12,13 +12,13 @@ fn test_dynamic_csr_new() {
 #[test]
 fn test_dynamic_csr_with_policy() {
     let policy = VanillaLogPolicy::with_size(5);
-    let csr: DynamicCSR<i32> = DynamicCSR::with_policy(policy);
+    let csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::with_policy(policy);
     assert_eq!(csr.policy().num_nodes(), 5);
 }
 
 #[test]
 fn test_dynamic_csr_append_single() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -33,7 +33,7 @@ fn test_dynamic_csr_append_single() {
 
 #[test]
 fn test_dynamic_csr_append_multiple_nodes() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 1);
     csr.append(0, 2);
@@ -54,7 +54,7 @@ fn test_dynamic_csr_append_multiple_nodes() {
 
 #[test]
 fn test_dynamic_csr_replace() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -71,7 +71,7 @@ fn test_dynamic_csr_replace() {
 
 #[test]
 fn test_dynamic_csr_replace_element() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -92,7 +92,7 @@ fn test_dynamic_csr_replace_element() {
 
 #[test]
 fn test_dynamic_csr_replace_element_not_found() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -106,7 +106,7 @@ fn test_dynamic_csr_replace_element_not_found() {
 
 #[test]
 fn test_dynamic_csr_remove() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -125,7 +125,7 @@ fn test_dynamic_csr_remove() {
 
 #[test]
 fn test_dynamic_csr_remove_element() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -143,7 +143,7 @@ fn test_dynamic_csr_remove_element() {
 
 #[test]
 fn test_dynamic_csr_erase() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -158,7 +158,7 @@ fn test_dynamic_csr_erase() {
 
 #[test]
 fn test_dynamic_csr_empty_commit() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.commit();
 
@@ -167,7 +167,7 @@ fn test_dynamic_csr_empty_commit() {
 
 #[test]
 fn test_dynamic_csr_multiple_commits() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 1);
     csr.append(0, 2);
@@ -188,7 +188,7 @@ fn test_dynamic_csr_multiple_commits() {
 
 #[test]
 fn test_dynamic_csr_non_sequential_nodes() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(2, 20);
     csr.append(5, 50);
@@ -206,7 +206,7 @@ fn test_dynamic_csr_non_sequential_nodes() {
 
 #[test]
 fn test_dynamic_csr_data_ptr() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -218,7 +218,7 @@ fn test_dynamic_csr_data_ptr() {
 
 #[test]
 fn test_dynamic_csr_data_mut_ptr() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(0, 20);
@@ -230,20 +230,20 @@ fn test_dynamic_csr_data_mut_ptr() {
 
 #[test]
 fn test_dynamic_csr_topology_ptrs() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.append(1, 20);
     csr.commit();
 
-    let (start_ptr, size_ptr) = csr.topology_ptrs(Device::CPU);
+    let (start_ptr, size_ptr): (*const usize, *const usize) = csr.topology_ptrs(Device::CPU);
     assert!(!start_ptr.is_null());
     assert!(!size_ptr.is_null());
 }
 
 #[test]
 fn test_dynamic_csr_complex_workflow() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 1);
     csr.append(0, 2);
@@ -280,19 +280,28 @@ fn test_dynamic_csr_with_custom_policy() {
         fn with_size(_num_nodes: usize) -> Self { TestPolicy }
         fn init(&mut self, _sizes: &[usize]) {}
         fn realloc(&mut self, _new_num_nodes: usize, _updates: &[(usize, usize)]) {}
+        fn compact(&mut self, new_num_nodes: usize, updates: &[(usize, usize)]) {
+            let _ = new_num_nodes;
+            let _ = updates;
+        }
         fn get_node_offset(&self, _node_id: usize) -> Option<usize> { Some(0) }
         fn get_node_size(&self, _node_id: usize) -> Option<usize> { Some(0) }
-        fn compact(&mut self) -> Vec<dcsr::RelocationOp> { vec![] }
         fn num_nodes(&self) -> usize { 0 }
         fn total_size(&self) -> usize { 0 }
         fn total_capacity(&self) -> usize { 0 }
         fn start_ptr(&self, _device: Device) -> *const usize { std::ptr::null() }
         fn size_ptr(&self, _device: Device) -> *const usize { std::ptr::null() }
+        fn start_mut_ptr(&mut self, _device: Device) -> *mut usize { std::ptr::null_mut() }
+        fn size_mut_ptr(&mut self, _device: Device) -> *mut usize { std::ptr::null_mut() }
+        fn get_node_starts(&self) -> Vec<usize> {
+            Vec::new()
+        }
         fn get_dirty_ranges(&self) -> &BTreeMap<usize, usize> {
             static EMPTY_MAP: BTreeMap<usize, usize> = BTreeMap::new();
             &EMPTY_MAP
         }
         fn clear_dirty_ranges(&mut self) {}
+        fn mem_usage(&self) -> usize { 0 }
     }
 
     let csr: DynamicCSR<i32, TestPolicy> = DynamicCSR::new();
@@ -301,7 +310,7 @@ fn test_dynamic_csr_with_custom_policy() {
 
 #[test]
 fn test_dynamic_csr_replace_on_empty_node() {
-    let mut csr: DynamicCSR<i32> = DynamicCSR::new();
+    let mut csr: DynamicCSR<i32, VanillaLogPolicy> = DynamicCSR::new();
 
     csr.append(0, 10);
     csr.commit();

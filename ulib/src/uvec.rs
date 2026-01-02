@@ -8,6 +8,7 @@ use std::fmt;
 use std::cell::UnsafeCell;
 use bytemuck::Zeroable;
 use std::cmp::max;
+use std::collections::BTreeMap;
 
 #[cfg(feature = "cuda")]
 use cust::memory::{ DeviceBuffer, CopyDestination };
@@ -41,7 +42,8 @@ impl<T: UniversalCopy> UVec<T> {
 /// defines the reallocation heuristic. current we allocate 50\% more.
 #[inline]
 fn realloc_heuristic(new_len: usize) -> usize {
-    (new_len as f64 * 1.5).round() as usize
+    // (new_len as f64 * 1.5).round() as usize
+    new_len
 }
 
 #[inline]
@@ -424,11 +426,11 @@ impl<T: UniversalCopy> UVecInternal<T> {
     }
 
     #[cfg(feature = "cuda")]
-    unsafe fn copy_range_to_device(
+    unsafe fn copy_multi_ranges_to_device(
         &mut self,
         src_device: Device,
         dst_device: Device,
-        src_range: (usize, usize),
+        src_ranges: &BTreeMap<usize, usize>,
     ) {
         use Device::*;
         let is_none = match dst_device {
@@ -440,10 +442,10 @@ impl<T: UniversalCopy> UVecInternal<T> {
             unsafe { self.alloc_uninitialized(dst_device); }
         }
 
-        let (start, end) = if is_none {
-            (0, self.len)
+        let ranges: Vec<(usize, usize)> = if is_none {
+            vec![(0, self.len)]
         } else {
-            src_range
+            src_ranges.iter().map(|(&s, &e)| (s, e)).collect()
         };
 
         match (src_device, dst_device) {
@@ -452,19 +454,21 @@ impl<T: UniversalCopy> UVecInternal<T> {
             (CPU, CUDA(c)) => {
                 let _context = CUDA(c).get_context();
                 let c = c as usize;
-                self.data_cuda[c].as_mut().unwrap().index(start..end)
-                    .copy_from(
-                        &self.data_cpu.as_ref().unwrap()[start..end]
-                    ).unwrap();
+                let dst = self.data_cuda[c].as_mut().unwrap();
+                let src = self.data_cpu.as_ref().unwrap();
+                for (start, end) in ranges {
+                    dst.index(start..end).copy_from(&src[start..end]).unwrap();
+                }
             },
             #[cfg(feature = "cuda")]
             (CUDA(c), CPU) => {
                 let _context = CUDA(c).get_context();
                 let c = c as usize;
-                self.data_cuda[c].as_ref().unwrap().index(start..end)
-                    .copy_to(
-                        &mut self.data_cpu.as_mut().unwrap()[start..end]
-                    ).unwrap();
+                let src = self.data_cuda[c].as_ref().unwrap();
+                let dst = self.data_cpu.as_mut().unwrap();
+                for (start, end) in ranges {
+                    src.index(start..end).copy_to(&mut dst[start..end]).unwrap();
+                }
                 CurrentContext::synchronize().unwrap();
             },
             #[cfg(feature = "cuda")]
@@ -472,17 +476,19 @@ impl<T: UniversalCopy> UVecInternal<T> {
                 let _context = CUDA(c2).get_context();
                 let (c1, c2) = (c1 as usize, c2 as usize);
                 assert_ne!(c1, c2);
-                // unsafe is used to access one mutable element.
-                // safety guaranteed by the above `assert_ne!`.
-                let c2_mut = unsafe {
-                    &mut *(self.data_cuda[c2].as_mut().unwrap()
-                           as *const DeviceBuffer<T>
-                           as *mut DeviceBuffer<T>)
-                };
-                self.data_cuda[c1].as_ref().unwrap().index(start..end)
-                    .copy_to(
-                        &mut c2_mut.index(start..end)
-                    ).unwrap();
+                for (start, end) in ranges {
+                    // unsafe is used to access one mutable element.
+                    // safety guaranteed by the above `assert_ne!`.
+                    let c2_mut = unsafe {
+                        &mut *(self.data_cuda[c2].as_mut().unwrap()
+                               as *const DeviceBuffer<T>
+                               as *mut DeviceBuffer<T>)
+                    };
+                    self.data_cuda[c1].as_ref().unwrap().index(start..end)
+                        .copy_to(
+                            &mut c2_mut.index(start..end)
+                        ).unwrap();
+                }
             }
         }
     }
@@ -547,6 +553,30 @@ impl<T: UniversalCopy> UVec<T> {
     pub unsafe fn mark_valid(&mut self, device: Device) {
         let intl = self.get_intl_mut();
         intl.valid_flag[device.to_id()] = true;
+    }
+
+    /// Mark all device's data as invalid except the specified device,
+    ///
+    /// This is unsafe because it assumes that the data on the specified device
+    /// is already up-to-date. Use with caution, typically after performing
+    /// device-specific memory operations.
+    #[inline]
+    pub unsafe fn mark_all_invalid_except(&mut self, device: Device) {
+        let intl = self.get_intl_mut();
+        intl.valid_flag.fill(false);
+        intl.valid_flag[device.to_id()] = true;
+    }
+
+    #[cfg(feature = "cuda")]
+    pub unsafe fn replace_gpu_buffer_unchecked(
+        &mut self,
+        gpu_id: usize,
+        buffer: DeviceBuffer<T>,
+    ) {
+        let intl = self.get_intl_mut_unsafe();
+        intl.data_cuda[gpu_id] = Some(buffer);
+        intl.valid_flag[1 + gpu_id] = true;
+        intl.valid_flag[0] = false; // CPU is not valid
     }
 
     #[inline]
@@ -698,7 +728,7 @@ impl<T: UniversalCopy> UVec<T> {
         if intl.len + additional <= intl.capacity {
             return
         }
-        intl.capacity = realloc_exponential(intl.len + additional, intl.capacity);
+        intl.capacity = realloc_heuristic(intl.len + additional);
         unsafe { intl.realloc_uninit_preserve(device); }
     }
 
@@ -718,7 +748,7 @@ impl<T: UniversalCopy> UVec<T> {
     pub unsafe fn resize_uninit_nopreserve(&mut self, len: usize, device: Device) {
         let intl = self.get_intl_mut();
         if intl.capacity < len {
-            intl.capacity = realloc_exponential(len, intl.capacity);
+            intl.capacity = realloc_heuristic(len);
             intl.realloc_uninit_nopreserve(device);
         }
         intl.len = len;
@@ -734,7 +764,7 @@ impl<T: UniversalCopy> UVec<T> {
         }
         let intl = self.get_intl_mut();
         if intl.capacity < len {
-            intl.capacity = realloc_exponential(len, intl.capacity);
+            intl.capacity = realloc_heuristic(len);
             intl.realloc_uninit_preserve(device);
         }
         intl.len = len;
@@ -742,12 +772,12 @@ impl<T: UniversalCopy> UVec<T> {
         intl.valid_flag[device.to_id()] = true;
     }
 
-    /// Copy a range of data from one device to another without copying the entire buffer.
+    /// Copy ranges of data from one device to another without copying the entire buffer.
     ///
     /// # Safety
     ///
     /// This is unsafe because:
-    /// 1. The caller must ensure that `src_range` is within bounds of the vector
+    /// 1. The caller must ensure that `src_ranges` is within bounds of the vector
     /// 2. The caller must ensure that the destination device buffer is already allocated
     /// 3. The caller must ensure that the source device has valid data
     /// 4. This bypasses the normal `valid_flag` management - the caller is responsible
@@ -757,13 +787,13 @@ impl<T: UniversalCopy> UVec<T> {
     ///
     /// * `src_device` - The device to copy data from
     /// * `dst_device` - The device to copy data to
-    /// * `src_range` - The range (start, end) to copy from the source device
+    /// * `src_ranges` - The ranges (start, end) to copy from the source device
     #[cfg(feature = "cuda")]
-    pub unsafe fn copy_range_to_device(
+    pub unsafe fn copy_multi_ranges_to_device(
         &mut self,
         src_device: Device,
         dst_device: Device,
-        src_range: (usize, usize),
+        src_ranges: &BTreeMap<usize, usize>,
     ) {
         if src_device == dst_device {
             return;
@@ -774,16 +804,15 @@ impl<T: UniversalCopy> UVec<T> {
         if !intl.valid_flag[src_device.to_id()] {
             panic!("source device data is not valid for copy_range_to_device");
         }
-        let (start, end) = src_range;
-        if start >= end || end > intl.len {
-            panic!("invalid range for copy_range_to_device");
+        if src_ranges.is_empty() {
+            return;
         }
         let intl_erased = unsafe {
             &mut *(self.get_intl_mut_unsafe() as *mut UVecInternal<T>)
         };
         let locked = intl.read_locks[dst_device.to_id()]
             .lock().unwrap();
-        intl_erased.copy_range_to_device(src_device, dst_device, src_range);
+        intl_erased.copy_multi_ranges_to_device(src_device, dst_device, src_ranges);
         drop(locked);
     }
 

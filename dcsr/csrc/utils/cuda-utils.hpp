@@ -1,9 +1,10 @@
 // cuda-utils.hpp
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <cuda_runtime.h>
 
-#define DEBUG_INFO
+typedef uintptr_t usize;
 
 void *cudaMallocCheck(size_t size);
 void cudaMemcpyH2DCheck(void *dst, void *src, size_t size);

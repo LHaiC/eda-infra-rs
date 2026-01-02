@@ -3,8 +3,6 @@
 #include <stdio.h>
 #include "utils/cuda-utils.hpp"
 
-typedef uintptr_t usize;
-
 __global__ void verify_dcsr_sum_kernel(
     uint32_t num_nodes,
     const int* d_data,

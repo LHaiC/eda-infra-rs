@@ -76,6 +76,32 @@ impl<T: UniversalCopy> FlatMem<T> {
     }
 
     #[inline]
+    pub fn init<P: MemPolicy>(
+        &mut self,
+        data: &Vec<Vec<T>>,
+        policy: &P,
+    ) {
+        let slice = self.data.as_mut();
+
+        for (node_id, node_data) in data.iter().enumerate() {
+            let offset = match policy.get_node_offset(node_id) {
+                Some(offset) => offset,
+                None => continue,
+            };
+
+            let size = match policy.get_node_size(node_id) {
+                Some(size) => size,
+                None => continue,
+            };
+
+            let write_len = size.min(node_data.len());
+            for i in 0..write_len {
+                slice[offset + i] = node_data[i];
+            }
+        }
+    }
+
+    #[inline]
     pub fn fill_from_buffer<P: MemPolicy>(
         &mut self,
         buffer: &BTreeMap<usize, Vec<T>>,
@@ -97,6 +123,40 @@ impl<T: UniversalCopy> FlatMem<T> {
             let write_len = size.min(data.len());
             for i in 0..write_len {
                 slice[offset + i] = data[i];
+            }
+        }
+    }
+
+    #[inline]
+    pub fn compact<P: MemPolicy>(
+        &mut self,
+        old_data: Vec<T>,
+        old_node_start: Vec<usize>,
+        buffer: &BTreeMap<usize, Vec<T>>,
+        policy: &P,
+    ) {
+        let slice = self.data.as_mut();
+        let num_nodes = policy.num_nodes();
+
+        for node_id in 0..num_nodes {
+            let offset = match policy.get_node_offset(node_id) {
+                Some(offset) => offset,
+                None => continue,
+            };
+            let size = match policy.get_node_size(node_id) {
+                Some(size) => size,
+                None => continue,
+            };
+            if let Some(node_data) = buffer.get(&node_id) {
+                let write_len = size.min(node_data.len());
+                for i in 0..write_len {
+                    slice[offset + i] = node_data[i];
+                }
+            } else {
+                let old_start = old_node_start[node_id];
+                for i in 0..size {
+                    slice[offset + i] = old_data[old_start + i];
+                }
             }
         }
     }
@@ -142,20 +202,8 @@ impl<T: UniversalCopy> FlatMem<T> {
     /// After this operation, the GPU data is marked as valid.
     #[cfg(feature = "cuda")]
     pub unsafe fn copy_dirty_ranges_to_gpu(&mut self, device: Device, dirty_ranges: &BTreeMap<usize, usize>) {
-        for (&start, &end) in dirty_ranges.iter() {
-            self.data.copy_range_to_device(Device::CPU, device, (start, end));
-        }
+        self.data.copy_multi_ranges_to_device(Device::CPU, device, dirty_ranges);
         self.data.mark_valid(device);
-    }
-
-    #[inline]
-    pub fn to_uvec(self) -> UVec<T> {
-        self.data
-    }
-
-    #[inline]
-    pub fn to_vec(self) -> Vec<T> {
-        self.data.to_vec()
     }
 }
 
@@ -247,5 +295,12 @@ impl<T: UniversalCopy> AsUPtrMut<T> for FlatMem<T> {
     #[inline]
     fn as_mut_uptr(&mut self, device: Device) -> *mut T {
         self.data.as_mut_uptr(device)
+    }
+}
+
+impl<T: UniversalCopy> FlatMem<T> {
+    #[inline]
+    pub fn mem_usage(&self) -> usize {
+        self.data.capacity() * std::mem::size_of::<T>()
     }
 }

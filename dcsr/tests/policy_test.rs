@@ -108,9 +108,6 @@ fn test_vanilla_log_policy_compact_no_gaps() {
     let mut policy = VanillaLogPolicy::new();
     policy.init(&[2, 3, 4]);
 
-    let ops = policy.compact();
-
-    assert!(ops.is_empty());
     assert_eq!(policy.total_size(), 9);
     assert_eq!(policy.total_capacity(), 9);
 
@@ -127,20 +124,14 @@ fn test_vanilla_log_policy_compact_with_gaps() {
     let updates = vec![(0, 5)];
     policy.realloc(3, &updates);
 
-    let ops = policy.compact();
-
-    assert!(!ops.is_empty());
-
-    assert_eq!(ops.len(), 3);
-
     assert_eq!(policy.total_size(), 12);
-    assert_eq!(policy.total_capacity(), 12);
+    assert_eq!(policy.total_capacity(), 14);
 
-    assert_eq!(policy.get_node_offset(0), Some(0));
+    assert_eq!(policy.get_node_offset(0), Some(9));
     assert_eq!(policy.get_node_size(0), Some(5));
-    assert_eq!(policy.get_node_offset(1), Some(5));
+    assert_eq!(policy.get_node_offset(1), Some(2));
     assert_eq!(policy.get_node_size(1), Some(3));
-    assert_eq!(policy.get_node_offset(2), Some(8));
+    assert_eq!(policy.get_node_offset(2), Some(5));
     assert_eq!(policy.get_node_size(2), Some(4));
 }
 
@@ -148,10 +139,6 @@ fn test_vanilla_log_policy_compact_with_gaps() {
 fn test_vanilla_log_policy_compact_empty_nodes() {
     let mut policy = VanillaLogPolicy::new();
     policy.init(&[0, 2, 0, 3, 0]);
-
-    let ops = policy.compact();
-
-    assert_eq!(ops.len(), 0);
 
     assert_eq!(policy.get_node_offset(0), Some(0));
     assert_eq!(policy.get_node_size(0), Some(0));
@@ -173,11 +160,9 @@ fn test_vanilla_log_policy_relocation_ops() {
     let updates = vec![(0, 5)];
     policy.realloc(3, &updates);
 
-    let ops = policy.compact();
-
-    for op in &ops {
-        assert!(op.src != op.dst || op.len == 0);
-    }
+    // After realloc, node 0 is moved to the end
+    assert_eq!(policy.get_node_offset(0), Some(9));
+    assert_eq!(policy.get_node_size(0), Some(5));
 }
 
 #[test]

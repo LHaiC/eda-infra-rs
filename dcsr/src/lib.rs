@@ -7,4 +7,4 @@ pub mod policy;
 
 pub use flatmem::FlatMem;
 pub use dcsr::DynamicCSR;
-pub use policy::{MemPolicy, VanillaLogPolicy, RelocationOp};
+pub use policy::{MemPolicy, VanillaLogPolicy, PowerOfTwoSlabPolicy};

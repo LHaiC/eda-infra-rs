@@ -1,4 +1,4 @@
-use dcsr::{DynamicCSR, MemPolicy};
+use dcsr::{DynamicCSR, MemPolicy, VanillaLogPolicy};
 use ulib::{Device, UVec, UniversalCopy, AsUPtr};
 use std::time::Instant;
 use std::fs;
@@ -115,7 +115,7 @@ extern "C" {
 }
 
 // Rust wrappers for the FFI calls
-fn verify_dcsr(dcsr: &mut DynamicCSR<i32>, count: u32) -> Vec<i32> {
+fn verify_dcsr(dcsr: &mut DynamicCSR<i32, VanillaLogPolicy>, count: u32) -> Vec<i32> {
     let mut results = vec![0i32; count as usize];
     let device = Device::CUDA(0);
     let num_nodes = dcsr.policy().num_nodes() as u32;
@@ -170,6 +170,30 @@ impl<T: UniversalCopy + Clone> NaiveCsr<T> {
 
     pub fn append(&mut self, node_id: usize, val: T) {
         self.adj[node_id].push(val);
+    }
+
+    pub fn init(&mut self, data: &Vec<Vec<T>>) {
+        for (node_id, neighbors) in data.iter().enumerate() {
+            self.adj[node_id] = neighbors.clone();
+        }
+
+        let _ctx = self.device.get_context();
+
+        let num_nodes = self.adj.len();
+        let mut indptr_vec = Vec::with_capacity(num_nodes + 1);
+        let mut data_vec = Vec::new();
+
+        indptr_vec.push(0);
+        let mut current_offset = 0;
+
+        for neighbors in &self.adj {
+            data_vec.extend_from_slice(neighbors);
+            current_offset += neighbors.len();
+            indptr_vec.push(current_offset as u32);
+        }
+
+        self.indptr = UVec::from(indptr_vec);
+        self.data = UVec::from(data_vec);
     }
 
     pub fn commit(&mut self) {
@@ -236,33 +260,13 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
     let mut naive_get_ptr_total = std::time::Duration::new(0, 0);
 
     for iter in 0..config.iterations {
-
-            // Context Reset - DCSR
-
-            let mut dcsr_graph = DynamicCSR::<i32>::new();
-
-    
-
-            for (i, neighbors) in template_adj.iter().enumerate() {
-
-                for &val in neighbors {
-
-                    dcsr_graph.append(i, val);
-
-                }
-
-            }
-
-            dcsr_graph.commit();
+        // Context Reset - DCSR
+        let mut dcsr_graph = DynamicCSR::<i32, VanillaLogPolicy>::new();
+        dcsr_graph.init(&template_adj);
 
         // Context Reset - Naive
         let mut naive_graph = NaiveCsr::<i32>::new(config.num_nodes, device);
-        for (i, neighbors) in template_adj.iter().enumerate() {
-            for &val in neighbors {
-                naive_graph.append(i, val);
-            }
-        }
-        naive_graph.commit();
+        naive_graph.init(&template_adj);
 
         // Initial verification
         if iter == 0 {
@@ -304,7 +308,7 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
             let _ = naive_graph.get_pointers();
             naive_get_ptr_total += start.elapsed();
 
-            // Intermittent verification (disabled for now)
+            // Intermittent verification
             if iter == 0 && (r + 1) % (config.update_rounds / 5).max(1) == 0 {
                 let dcsr_res = verify_dcsr(&mut dcsr_graph, config.num_nodes);
                 let naive_res = verify_naive_csr(&naive_graph, config.num_nodes);
@@ -348,7 +352,7 @@ fn run_single_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
 
 #[cfg(test)]
 fn main() {
-    let config_path = "tests/benchmark_config_small.json";
+    let config_path = "tests/benchmark_config_test.json";
 
     let suite = if Path::new(config_path).exists() {
         BenchmarkSuite::from_json(config_path).expect("Failed to load benchmark config")
