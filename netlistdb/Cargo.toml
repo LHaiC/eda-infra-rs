@@ -21,6 +21,7 @@ regex = "1.9.5"
 thread_local = "1.1.7"
 dyn-iter = "1.0.1"
 itertools = "0.10.3"
+dcsr = { version = "0.2.0", path = "../dcsr" }
 
 [build-dependencies]
 ucc = { version = "0.2.6", path = "../ucc" }

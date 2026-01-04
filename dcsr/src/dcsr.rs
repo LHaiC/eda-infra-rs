@@ -4,9 +4,9 @@ use std::cmp::PartialEq;
 use std::default::Default;
 use std::fmt::Debug;
 use crate::flatmem::{FlatStorage, FlatMem};
-use crate::policy::MemPolicy;
+use crate::policy::{MemPolicy, VanillaLogPolicy};
 
-pub struct DynamicCSR<T, P, S = FlatMem<T>>
+pub struct DynamicCSR<T, P = VanillaLogPolicy, S = FlatMem<T>>
 where
     T: UniversalCopy + PartialEq + Default + Debug,
     P: MemPolicy,
@@ -43,6 +43,13 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorag
             policy,
             pending: BTreeMap::new(),
         }
+    }
+
+    #[inline]
+    pub fn from_csr(starts: &[usize], items: &[T]) -> Self {
+        let mut dcsr = Self::new();
+        dcsr.init_from_csr(starts, items);
+        dcsr
     }
 
     fn ensure_staging(&mut self, node_id: usize) -> &mut Vec<T> {
@@ -107,6 +114,19 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorag
         self.pending.clear();
     }
 
+    pub fn init_from_csr(&mut self, starts: &[usize], items: &[T]) {
+        let num_nodes = starts.len() - 1;
+        self.policy.init_from_flat(num_nodes, starts);
+        let required_capacity = self.policy.total_capacity();
+        if self.mem.len() < required_capacity {
+            unsafe {
+                self.mem.resize_uninit_preserve(required_capacity, Device::CPU);
+            }
+        }
+        self.mem.init_from_csr(items);
+        self.pending.clear();
+    }
+
     pub fn commit(&mut self) {
         if self.pending.is_empty() {
             return;
@@ -156,8 +176,18 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorag
     }
 
     #[inline]
+    pub fn policy_mut(&mut self) -> &mut P {
+        &mut self.policy
+    }
+
+    #[inline]
     pub fn mem(&self) -> &S {
         &self.mem
+    }
+
+    #[inline]
+    pub fn mem_mut(&mut self) -> &mut S {
+        &mut self.mem
     }
 
     #[inline]
@@ -182,6 +212,9 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorag
     #[inline]
     pub fn data_mut_ptr(&mut self, device: Device) -> *mut T {
         self.sync_data_dirty_ranges(device);
+        if device == Device::CPU {
+            self.policy.mark_all_dirty();
+        }
         self.mem.as_mut_uptr(device)
     }
 
@@ -207,5 +240,15 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorag
         let total_size = self.policy.total_size();
         let total_capacity = self.policy.total_capacity();
         total_capacity > total_size * 2
+    }
+}
+
+impl<T: UniversalCopy + PartialEq + Default + Debug + Clone, P: MemPolicy + Clone, S: FlatStorage<T> + Clone> Clone for DynamicCSR<T, P, S> {
+    fn clone(&self) -> Self {
+        Self {
+            mem: self.mem.clone(),
+            policy: self.policy.clone(),
+            pending: self.pending.clone(),
+        }
     }
 }

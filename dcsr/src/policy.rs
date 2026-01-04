@@ -45,6 +45,8 @@ pub trait MemPolicy: Send + Sync {
 
     fn init(&mut self, sizes: &[usize]);
 
+    fn init_from_flat(&mut self, num_nodes: usize, starts: &[usize]);
+
     fn realloc(&mut self, new_num_nodes: usize, updates: &[(usize, usize)]);
 
     fn compact(&mut self, new_num_nodes: usize, updates: &[(usize, usize)]);
@@ -63,11 +65,17 @@ pub trait MemPolicy: Send + Sync {
 
     fn size_ptr(&self, device: Device) -> *const usize;
 
+    fn starts(&self, device: Device) -> &[usize];
+
+    fn sizes(&self, device: Device) -> &[usize];
+
     fn start_mut_ptr(&mut self, device: Device) -> *mut usize;
 
     fn size_mut_ptr(&mut self, device: Device) -> *mut usize;
 
     fn get_node_starts(&self) -> Vec<usize>;
+
+    fn mark_all_dirty(&mut self);
 
     fn get_dirty_ranges(&self) -> &BTreeMap<usize, usize>;
 
@@ -83,6 +91,25 @@ pub struct VanillaLogPolicy {
     total_size: usize,
     total_capacity: usize,
     dirty_ranges: BTreeMap<usize, usize>,
+}
+
+impl Clone for VanillaLogPolicy {
+    fn clone(&self) -> Self {
+        Self {
+            node_starts: self.node_starts.clone(),
+            node_sizes: self.node_sizes.clone(),
+            num_nodes: self.num_nodes,
+            total_size: self.total_size,
+            total_capacity: self.total_capacity,
+            dirty_ranges: self.dirty_ranges.clone(),
+        }
+    }
+}
+
+impl Default for VanillaLogPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemPolicy for VanillaLogPolicy {
@@ -126,12 +153,38 @@ impl MemPolicy for VanillaLogPolicy {
             self.node_sizes[i] = size;
             offset += size;
         }
+        // Set the last start element to total size (end of last node)
+        self.node_starts[num_nodes] = offset;
         self.num_nodes = num_nodes;
         self.total_size = offset;
         self.total_capacity = offset;
         self.dirty_ranges.clear();
         add_dirty_range_to_map(&mut self.dirty_ranges, 0, offset);
     }
+
+    fn init_from_flat(&mut self, num_nodes: usize, starts: &[usize]) {
+        let device = Device::CPU;
+        self.num_nodes = num_nodes;
+        
+        unsafe {
+            self.node_starts.resize_uninit_nopreserve(num_nodes + 1, device);
+            self.node_sizes.resize_uninit_nopreserve(num_nodes + 1, device);
+        }
+        
+        // Copy node_starts from start array
+        for i in 0..num_nodes {
+            self.node_starts[i] = starts[i];
+            self.node_sizes[i] = starts[i + 1] - starts[i];
+        }
+        let total_len = starts[num_nodes];
+        self.node_starts[num_nodes] = total_len;
+        self.total_size = total_len;
+        self.total_capacity = total_len;
+
+        self.dirty_ranges.clear();
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, total_len);
+    }
+
     fn realloc(&mut self, new_num_nodes: usize, updates: &[(usize, usize)]) {
         let device = Device::CPU;
         let old_num_nodes = self.num_nodes;
@@ -231,6 +284,18 @@ impl MemPolicy for VanillaLogPolicy {
         self.node_sizes.as_uptr(device)
     }
 
+    fn starts(&self, device: Device) -> &[usize] {
+        let ptr = self.node_starts.as_uptr(device);
+        let len = self.node_starts.len();
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
+    fn sizes(&self, device: Device) -> &[usize] {
+        let ptr = self.node_sizes.as_uptr(device);
+        let len = self.node_sizes.len();
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
     fn start_mut_ptr(&mut self, device: Device) -> *mut usize {
         self.node_starts.as_mut_uptr(device)
     }
@@ -249,6 +314,10 @@ impl MemPolicy for VanillaLogPolicy {
 
     fn clear_dirty_ranges(&mut self) {
         self.dirty_ranges.clear();
+    }
+
+    fn mark_all_dirty(&mut self) {
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, self.total_capacity);
     }
 
     fn mem_usage(&self) -> usize {
@@ -271,6 +340,22 @@ pub struct PowerOfTwoSlabPolicy {
     total_size: usize,
     total_capacity: usize,
     dirty_ranges: BTreeMap<usize, usize>,
+}
+
+impl Clone for PowerOfTwoSlabPolicy {
+    fn clone(&self) -> Self {
+        Self {
+            node_starts: self.node_starts.clone(),
+            node_sizes: self.node_sizes.clone(),
+            num_nodes: self.num_nodes,
+            collection_order_threshold: self.collection_order_threshold,
+            num_size_classes: self.num_size_classes,
+            free_lists: self.free_lists.clone(),
+            total_size: self.total_size,
+            total_capacity: self.total_capacity,
+            dirty_ranges: self.dirty_ranges.clone(),
+        }
+    }
 }
 
 impl PowerOfTwoSlabPolicy {
@@ -378,6 +463,29 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
         }
         self.dirty_ranges.clear();
         add_dirty_range_to_map(&mut self.dirty_ranges, 0, offset);
+    }
+
+    fn init_from_flat(&mut self, num_nodes: usize, starts: &[usize]) {
+        let device = Device::CPU;
+        self.num_nodes = num_nodes;
+        
+        unsafe {
+            self.node_starts.resize_uninit_nopreserve(num_nodes + 1, device);
+            self.node_sizes.resize_uninit_nopreserve(num_nodes + 1, device);
+        }
+        
+        // Copy node_starts from start array
+        for i in 0..num_nodes {
+            self.node_starts[i] = starts[i];
+            self.node_sizes[i] = starts[i + 1] - starts[i];
+        }
+        let total_len = starts[num_nodes];
+        self.node_starts[num_nodes] = total_len;
+        self.total_size = total_len;
+        self.total_capacity = total_len;
+
+        self.dirty_ranges.clear();
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, total_len);
     }
 
     fn realloc(&mut self, new_num_nodes: usize, updates: &[(usize, usize)]) {
@@ -496,6 +604,18 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
         self.node_sizes.as_uptr(device)
     }
 
+    fn starts(&self, device: Device) -> &[usize] {
+        let ptr = self.node_starts.as_uptr(device);
+        let len = self.node_starts.len();
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
+    fn sizes(&self, device: Device) -> &[usize] {
+        let ptr = self.node_sizes.as_uptr(device);
+        let len = self.node_sizes.len();
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
     fn start_mut_ptr(&mut self, device: Device) -> *mut usize {
         self.node_starts.as_mut_uptr(device)
     }
@@ -514,6 +634,10 @@ impl MemPolicy for PowerOfTwoSlabPolicy {
 
     fn clear_dirty_ranges(&mut self) {
         self.dirty_ranges.clear();
+    }
+
+    fn mark_all_dirty(&mut self) {
+        add_dirty_range_to_map(&mut self.dirty_ranges, 0, self.total_capacity);
     }
 
     fn mem_usage(&self) -> usize {

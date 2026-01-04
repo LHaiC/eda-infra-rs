@@ -36,6 +36,9 @@ pub trait FlatStorage<T: UniversalCopy>: AsRef<[T]> + AsMut<[T]> {
     /// Initialize storage from data using policy
     fn init<P: MemPolicy>(&mut self, data: &Vec<Vec<T>>, policy: &P);
 
+    /// Initialize storage from csr items
+    fn init_from_csr(&mut self, items: &[T]);
+
     /// Fill storage from buffer using policy
     fn fill_from_buffer<P: MemPolicy>(&mut self, buffer: &BTreeMap<usize, Vec<T>>, policy: &P);
 
@@ -205,6 +208,11 @@ impl<T: UniversalCopy> FlatStorage<T> for FlatMem<T> {
                 slice[offset + i] = node_data[i];
             }
         }
+    }
+
+    #[inline]
+    fn init_from_csr(&mut self, items: &[T]) {
+        self.data[..items.len()].copy_from_slice(items);
     }
 
     #[inline]

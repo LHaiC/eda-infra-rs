@@ -488,8 +488,8 @@ impl NetlistDB {
                 }
                 debug_assert!(!pin2cell.iter().any(|x| *x == usize::MAX));
 
-                // construct cell CSR
-                let cell2pin = VecCSR::from(db.num_cells, db.num_pins, &pin2cell);
+                // construct cell CSR using DCSR
+                let cell2pin = DVecCSR::from(db.num_cells, db.num_pins, &pin2cell);
 
                 ret_pinname2id = Some(pinname2id);
                 ret_pin2cell = Some(pin2cell);
@@ -509,8 +509,8 @@ impl NetlistDB {
                     .map(|logic_id| logicpin2nets[*logic_id])
                     .collect::<UVec<_>>();
 
-                // construct net CSR
-                let net2pin = VecCSR::from(db.num_nets, db.num_pins, &pin2net);
+                // construct net CSR using DCSR
+                let net2pin = DVecCSR::from(db.num_nets, db.num_pins, &pin2net);
                 ret_pin2net = Some(pin2net);
                 ret_net2pin = Some(net2pin);
             });
@@ -636,9 +636,9 @@ impl NetlistDB {
         let mut num_undriven_nets = 0;
         // todo: parallelizable
         for i in 0..self.num_nets {
-            let l = self.net2pin.start[i];
-            let r = self.net2pin.start[i + 1];
-            let outs = (l..r).zip(self.net2pin.items[l..r].iter())
+            let l = self.net2pin.offset(i);
+            let r = l + self.net2pin.len(i);
+            let outs = (l..r).zip(self.net2pin.items()[l..r].iter())
                 .filter_map(
                     |(i, x)| if self.pindirect[*x] == Direction::O { Some(i) } else { None }
                 )
@@ -662,7 +662,7 @@ impl NetlistDB {
                 return None
             }
             let p = outs[0];
-            self.net2pin.items.swap(l, p);
+            self.net2pin.items_mut().swap(l, p);
         }
         if num_undriven_nets != 0 {
             clilog::warn!(NL_SV_NETIO_UNDRIV,
@@ -672,7 +672,7 @@ impl NetlistDB {
         self.cell2noutputs = (0..self.num_cells)
             .map(|cellid| {
                 self.cell2pin.iter_set(cellid)
-                    .filter(|&pinid| matches!(self.pindirect[pinid], Direction::O))
+                    .filter(|&pinid| matches!(self.pindirect[*pinid], Direction::O))
                     .count()
             })
             .collect();

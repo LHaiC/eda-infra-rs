@@ -22,7 +22,7 @@ pub enum Direction {
 }
 
 mod csr;
-pub use csr::VecCSR;
+pub use csr::{VecCSR, DVecCSR};
 
 mod hier_name;
 pub use hier_name::{
@@ -138,14 +138,14 @@ pub struct NetlistDB {
     pub pin2cell: UVec<usize>,
     /// Pin to parent net.
     pub pin2net: UVec<usize>,
-    /// Cell CSR.
-    pub cell2pin: VecCSR,
-    /// Net CSR.
+    /// Cell CSR (using DCSR for dynamic updates).
+    pub cell2pin: DVecCSR,
+    /// Net CSR (using DCSR for dynamic updates).
     ///
     /// **Caveat**: After assigning directions, it is guaranteed that
     /// the net root would be the first in net CSR.
     /// Before such assignment, the order is not determined.
-    pub net2pin: VecCSR,
+    pub net2pin: DVecCSR,
 
     /// Pin direction.
     pub pindirect: UVec<Direction>,
