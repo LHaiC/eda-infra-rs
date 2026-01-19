@@ -146,8 +146,35 @@ impl<P: MemPolicy> DVecCSR<P> {
     }
 
     /// Get an iterator over items in a set.
+    ///
+    /// This method returns an iterator over the items in the specified set.
+    /// It intelligently reads from the pending buffer first (if there are uncommitted changes),
+    /// otherwise falls back to the committed flat memory data.
+    ///
+    /// **Important**: This returns a read-only snapshot of the current data.
+    /// If there are pending changes, the data may change after the next `commit()`.
+    ///
+    /// # Arguments
+    /// * `set_id` - The ID of the set to iterate over
+    ///
+    /// # Returns
+    /// An iterator over references to the items in the set
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Read current data (pending or committed)
+    /// for &pin_id in dcsr.iter_set(net_id) {
+    ///     println!("Pin: {}", pin_id);
+    /// }
+    /// ```
     #[inline]
     pub fn iter_set(&self, set_id: usize) -> impl Iterator<Item = &usize> + '_ {
+        // First check pending buffer for uncommitted changes
+        if let Some(pending_data) = self.dcsr.get_pending_data(set_id) {
+            return pending_data.iter();
+        }
+
+        // Fall back to committed data in flat memory
         let offset = self.dcsr.policy().get_node_offset(set_id).unwrap_or(0);
         let size = self.dcsr.policy().get_node_size(set_id).unwrap_or(0);
         self.dcsr.mem()[offset..offset + size].iter()
@@ -177,10 +204,16 @@ impl<P: MemPolicy> DVecCSR<P> {
         self.dcsr.mem().as_ref()
     }
 
-    /// Mutable reference to items
+    /// Get mutable reference to items
     #[inline]
     pub fn items_mut(&mut self) -> &mut [usize] {
         self.dcsr.mem_mut().as_mut()
+    }
+
+    /// Swap two items within a set.
+    #[inline]
+    pub fn swap(&mut self, set_id: usize, idx1: usize, idx2: usize) {
+        self.dcsr.swap(set_id, idx1, idx2);
     }
 
     /// Get the internal policy for advanced operations.

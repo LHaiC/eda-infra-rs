@@ -78,6 +78,11 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorag
         buf[index] = val;
     }
 
+    pub fn swap(&mut self, node_id: usize, index_1: usize, index_2: usize) {
+        let buf = self.ensure_staging(node_id);
+        buf.swap(index_1, index_2);
+    }
+
     pub fn replace_element(&mut self, node_id: usize, old_val: T, new_val: T) {
         let buf = self.ensure_staging(node_id);
         if let Some(pos) = buf.iter().position(|x| *x == old_val) {
@@ -240,6 +245,16 @@ impl<T: UniversalCopy + PartialEq + Default + Debug, P: MemPolicy, S: FlatStorag
         let total_size = self.policy.total_size();
         let total_capacity = self.policy.total_capacity();
         total_capacity > total_size * 2
+    }
+
+    #[inline]
+    pub fn pending_keys(&self) -> impl Iterator<Item = usize> + '_ {
+        self.pending.keys().copied()
+    }
+
+    #[inline]
+    pub fn get_pending_data(&self, node_id: usize) -> Option<&Vec<T>> {
+        self.pending.get(&node_id)
     }
 }
 
